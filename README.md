@@ -39,6 +39,23 @@ Keep a harness-independent core for path validation, size and line limits, sourc
 - Uploading source code to a ContextLens-operated remote service
 - Depending on the existing Strata file-shunt implementation
 
+## OpenCode
+
+Add the plugin to `opencode.json`:
+
+```json
+{ "plugin": ["context-lens/plugin"] }
+```
+
+or re-export it from `.opencode/plugin/context-lens.ts`:
+`export { ContextLensPlugin } from "context-lens/plugin";`
+
+The cheap model is chosen from `CONTEXT_LENS_MODEL="provider/model"`, else
+`.context-lens/config.json` or `~/.config/context-lens/config.json`, else the host default.
+
+Native `read` results over 350 lines are condensed into excerpts with line ranges and a
+confidence score. Small files and ranged reads (`offset`/`limit`) pass through unchanged.
+
 ## Implementation status
 
 - ✅ Phase 1: Core interceptor (cheap model + excerpt extraction)

@@ -1,0 +1,227 @@
+import { deepStrictEqual, ok, strictEqual } from "node:assert";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { after, before, describe, it } from "node:test";
+import { FakeSubagentRunner } from "../core/fake-runner.js";
+import { createContextLensHooks } from "./hooks.js";
+import type { ContextLensClient, ContextLensHooksOptions } from "./hooks.js";
+
+const answer = {
+  excerpts: [{ startLine: 10, endLine: 12, reason: "target" }],
+  summary: "Found it.",
+  confidence: 4,
+};
+const tick = () => new Promise((r) => setImmediate(r));
+
+let tmp: string;
+let largePath: string;
+let smallPath: string;
+before(() => {
+  tmp = mkdtempSync(join(tmpdir(), "context-lens-hooks-"));
+  largePath = join(tmp, "large.ts");
+  smallPath = join(tmp, "small.ts");
+  writeFileSync(largePath, Array.from({ length: 400 }, (_, i) => `const line_${i + 1} = ${i + 1};`).join("\n"));
+  writeFileSync(smallPath, Array.from({ length: 100 }, (_, i) => `small ${i + 1}`).join("\n"));
+});
+after(() => rmSync(tmp, { recursive: true, force: true }));
+
+const noopClient = {
+  session: {
+    create: async () => ({}),
+    prompt: async () => ({}),
+    delete: async () => ({}),
+  },
+} as ContextLensClient;
+
+function setup(extra: Partial<ContextLensHooksOptions> = {}) {
+  const runner = new FakeSubagentRunner({ structured: answer });
+  const hooks = createContextLensHooks({
+    client: noopClient,
+    directory: tmp,
+    runner,
+    configOptions: { homeDir: tmp, env: {} },
+    ...extra,
+  });
+  return { hooks, runner };
+}
+
+const synthetic = (filePath: string) =>
+  Array.from({ length: 400 }, (_, i) => `${i + 1}: padded synthetic native read output for ${filePath}`).join("\n");
+const mkOutput = (filePath: string) => ({ title: filePath, output: synthetic(filePath), metadata: { a: 1 } });
+const call = (tool: string, args: unknown, sessionID = "s1") => ({ tool, sessionID, callID: "c1", args });
+
+describe("createContextLensHooks", () => {
+  it("(a) replaces large file output with rendered excerpts", async () => {
+    const { hooks, runner } = setup();
+    const out = mkOutput(largePath);
+    const original = out.output;
+    await hooks["tool.execute.after"](call("read", { filePath: largePath }), out);
+    ok(out.output.includes("lines 10-12"));
+    ok(out.output.includes("Confidence: 4/5"));
+    ok(out.output.includes("const line_10 = 10;"));
+    ok(out.output.length < original.length);
+    strictEqual(out.title, largePath);
+    deepStrictEqual(out.metadata, { a: 1 });
+    strictEqual(runner.calls.length, 1);
+  });
+
+  it("(a.1) accepts the OpenCode v2 read path argument", async () => {
+    const { hooks, runner } = setup();
+    const out = mkOutput(largePath);
+    await hooks["tool.execute.after"](call("read", { path: largePath }), out);
+    ok(out.output.includes("lines 10-12"));
+    strictEqual(runner.calls.length, 1);
+  });
+
+  it("(b) leaves small files untouched", async () => {
+    const { hooks, runner } = setup();
+    const out = mkOutput(smallPath);
+    const snapshot = structuredClone(out);
+    await hooks["tool.execute.after"](call("read", { filePath: smallPath }), out);
+    deepStrictEqual(out, snapshot);
+    strictEqual(runner.calls.length, 0);
+  });
+
+  it("(c) ranged reads pass through", async () => {
+    for (const args of [{ offset: 0 }, { limit: 50 }]) {
+      const { hooks, runner } = setup();
+      const out = mkOutput(largePath);
+      const snapshot = structuredClone(out);
+      await hooks["tool.execute.after"](call("read", { filePath: largePath, ...args }), out);
+      deepStrictEqual(out, snapshot);
+      strictEqual(runner.calls.length, 0);
+    }
+  });
+
+  it("(d) ignores other tools and matches Read case-insensitively", async () => {
+    const { hooks } = setup();
+    const bash = mkOutput(largePath);
+    const snapshot = structuredClone(bash);
+    await hooks["tool.execute.after"](call("bash", { filePath: largePath }), bash);
+    deepStrictEqual(bash, snapshot);
+    const read = mkOutput(largePath);
+    await hooks["tool.execute.after"](call("Read", { filePath: largePath }), read);
+    ok(read.output.includes("lines 10-12"));
+  });
+
+  it("(e) runner rejection leaves output unchanged", async () => {
+    const { hooks } = setup({
+      runner: new FakeSubagentRunner(() => {
+        throw new Error("boom");
+      }),
+    });
+    const out = mkOutput(largePath);
+    const snapshot = structuredClone(out);
+    await hooks["tool.execute.after"](call("read", { filePath: largePath }), out);
+    deepStrictEqual(out, snapshot);
+  });
+
+  it("(f) missing file leaves output unchanged", async () => {
+    const { hooks } = setup();
+    const missing = join(tmp, "nope.ts");
+    const out = mkOutput(missing);
+    const snapshot = structuredClone(out);
+    await hooks["tool.execute.after"](call("read", { filePath: missing }), out);
+    deepStrictEqual(out, snapshot);
+  });
+
+  it("(g) missing or empty args leave output unchanged", async () => {
+    const { hooks, runner } = setup();
+    for (const args of [undefined, {}, null, { filePath: "" }, { filePath: 3 }]) {
+      const out = mkOutput(largePath);
+      const snapshot = structuredClone(out);
+      await hooks["tool.execute.after"](call("read", args), out);
+      deepStrictEqual(out, snapshot);
+    }
+    strictEqual(runner.calls.length, 0);
+  });
+
+  it("(h) throwing or rejecting app.log does not break interception", async () => {
+    for (const log of [
+      () => {
+        throw new Error("sync");
+      },
+      () => Promise.reject(new Error("async")),
+    ]) {
+      const client = { ...noopClient, app: { log } } as ContextLensClient;
+      const { hooks } = setup({ client });
+      const out = mkOutput(largePath);
+      await hooks["tool.execute.after"](call("read", { filePath: largePath }), out);
+      ok(out.output.includes("lines 10-12"));
+      await tick();
+    }
+  });
+
+  it("(i) chat.message text feeds the prompt; explicit question wins", async () => {
+    const { hooks, runner } = setup();
+    await hooks["chat.message"](
+      { sessionID: "s1" },
+      {
+        message: {},
+        parts: [
+          { type: "text", text: "find the auth handler" },
+          { type: "text", text: "ignored", synthetic: true },
+          { type: "file" },
+        ],
+      }
+    );
+    await hooks["tool.execute.after"](call("read", { filePath: largePath }), mkOutput(largePath));
+    ok(runner.calls[0].prompt.includes("find the auth handler"));
+    ok(!runner.calls[0].prompt.includes("ignored"));
+    await hooks["tool.execute.after"](
+      call("read", { filePath: largePath, question: "where is X?" }),
+      mkOutput(largePath)
+    );
+    ok(runner.calls[1].prompt.includes("where is X?"));
+  });
+
+  it("(j) forwards structured logs and warns on corrupt config", async () => {
+    const logs: { body: { service: string; level: string; message: string; extra?: Record<string, unknown> } }[] = [];
+    const client = {
+      ...noopClient,
+      app: {
+        log: async (o: (typeof logs)[number]) => {
+          logs.push(o);
+        },
+      },
+    } as ContextLensClient;
+    const dir = mkdtempSync(join(tmpdir(), "context-lens-hooks-cfg-"));
+    try {
+      mkdirSync(join(dir, ".context-lens"));
+      writeFileSync(join(dir, ".context-lens", "config.json"), "{not json");
+      const { hooks } = setup({ client, directory: dir });
+      await hooks["tool.execute.after"](call("read", { filePath: largePath }), mkOutput(largePath));
+      await tick();
+      ok(logs.some((l) => l.body.service === "context-lens" && l.body.level === "info" && l.body.extra?.intercepted === true));
+      ok(logs.some((l) => l.body.level === "warn"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("(k) skips the plugin's own child sessions without deadlocking", { timeout: 5000 }, async () => {
+    let hooks: ReturnType<typeof createContextLensHooks>;
+    const nested = mkOutput(largePath);
+    const nestedSnapshot = structuredClone(nested);
+    const client = {
+      session: {
+        create: async () => ({ data: { id: "child-1" } }),
+        prompt: async () => {
+          await hooks["tool.execute.after"](call("read", { filePath: largePath }, "child-1"), nested);
+          return { data: { info: { structured: answer }, parts: [] } };
+        },
+        delete: async () => ({}),
+      },
+    } as ContextLensClient;
+    hooks = createContextLensHooks({
+      client,
+      directory: tmp,
+      configOptions: { homeDir: tmp, env: {} },
+    });
+    const outer = mkOutput(largePath);
+    await hooks["tool.execute.after"](call("read", { filePath: largePath }, "parent"), outer);
+    deepStrictEqual(nested, nestedSnapshot);
+    ok(outer.output.includes("lines 10-12"));
+  });
+});

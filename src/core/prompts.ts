@@ -1,13 +1,26 @@
 import { AgentContext } from "./models.js";
+import { resolveQuestion } from "./question.js";
 
-export function buildCheapModelPrompt(
-  filePath: string,
-  fileContent: string,
-  agentContext: AgentContext
-): string {
-  const lineCount = fileContent.split("\n").length;
+export interface BuildSubagentPromptOptions {
+  filePath: string;
+  fileContent: string;
+  question: string;
+  questionSource: "explicit" | "inferred";
+  agentContext: AgentContext;
+}
 
-  const contextClues = [
+export function buildSubagentPrompt({
+  filePath,
+  fileContent,
+  question,
+  questionSource,
+  agentContext,
+}: BuildSubagentPromptOptions): string {
+  const numberedContent = fileContent
+    .split("\n")
+    .map((line, index) => `${index + 1}| ${line}`)
+    .join("\n");
+  const context = [
     agentContext.goal && `Goal: ${agentContext.goal}`,
     agentContext.currentTask && `Current task: ${agentContext.currentTask}`,
     agentContext.instructions && `Instructions: ${agentContext.instructions}`,
@@ -15,33 +28,36 @@ export function buildCheapModelPrompt(
     .filter(Boolean)
     .join("\n");
 
-  return `You are a cheap-model read interceptor for a coding agent.
+  return `You select excerpts from an inline source file for a coding agent. Do not use tools.
 
-File: ${filePath}
-Size: ${lineCount} lines
-Agent context:
-${contextClues}
+FILE: ${filePath}
+QUESTION: ${question}
+${questionSource === "inferred" ? "The question was inferred from agent context." : "The question was supplied explicitly."}
+AGENT CONTEXT:
+${context || "None supplied."}
 
-TASK: Answer one implicit question based on the agent's context and goal.
-- Infer what the agent likely needs from this file
-- Find and return the most relevant excerpts (2–5 ranges)
-- For each excerpt, include 1–2 lines of surrounding context
-- End with a one-line summary of what the excerpts show
+Return 1-5 precise excerpt ranges that answer the question. Include 1-2 surrounding lines of context where useful. Use the numbered source lines exactly.
+Assign integer confidence 1-5: 1 means the file likely does not answer the question; 2 means weak evidence; 3 means partial answer; 4 means strong answer; 5 means excerpts fully answer it.
 
-RESPONSE FORMAT:
-Return ONLY valid JSON, no markdown:
-{
-  "excerpts": [
-    {"startLine": N, "endLine": M, "reason": "short reason"},
-    ...
-  ],
-  "summary": "one-line summary of key findings"
+Return ONLY valid JSON with this shape:
+{"excerpts":[{"startLine":1,"endLine":2,"reason":"short reason"}],"summary":"concise finding","confidence":4}
+
+NUMBERED FILE CONTENT:
+${numberedContent}`;
 }
 
-FILE CONTENT:
-\`\`\`
-${fileContent}
-\`\`\`
-
-Return excerpts as line numbers (1-indexed). Be precise and concise.`;
+/** @deprecated Use resolveQuestion and buildSubagentPrompt. */
+export function buildCheapModelPrompt(
+  filePath: string,
+  fileContent: string,
+  agentContext: AgentContext
+): string {
+  const resolved = resolveQuestion(undefined, agentContext);
+  return buildSubagentPrompt({
+    filePath,
+    fileContent,
+    question: resolved.question,
+    questionSource: resolved.source,
+    agentContext,
+  });
 }
