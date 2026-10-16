@@ -1,0 +1,46 @@
+{
+  "name": "context-lens",
+  "version": "0.1.0",
+  "description": "Cheap-model read interceptor for coding agents (Spotify Portal pattern)",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./core": {
+      "import": "./dist/core/index.js",
+      "types": "./dist/core/index.d.ts"
+    },
+    "./opencode": {
+      "import": "./dist/opencode/index.js",
+      "types": "./dist/opencode/index.d.ts"
+    },
+    "./copilot-cli": {
+      "import": "./dist/copilot-cli/index.js",
+      "types": "./dist/copilot-cli/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/**/*.test.js",
+    "type-check": "tsc --noEmit",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "context-window",
+    "coding-agent",
+    "cheap-model",
+    "interception"
+  ],
+  "author": "David Nagy",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}

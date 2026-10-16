@@ -9,9 +9,17 @@ Support both:
 - OpenCode, through its native plugin API
 - GitHub Copilot CLI, through supported MCP and hook integration points
 
-## Core constraint
+## Core mechanism (Spotify Portal pattern)
 
-ContextLens must not call a separate model, local inference endpoint, or configure an independent `STRATA_MODEL`. The active model selected in OpenCode or Copilot remains responsible for deciding which ContextLens tools to call and how to use their returned context.
+ContextLens uses a **cheap model (Haiku) as an intelligent read interceptor**:
+
+- **PreToolUse hook** intercepts large file reads (>350 lines)
+- **Cheap model** infers a question from the agent's task context
+- **Excerpts returned** as a hybrid format: actual text + line ranges + one-line summary
+- **Context savings**: ~90% reduction when intercepting large files
+- **Cost trade-off**: ~10–30s per cheap-model call is acceptable for intercepted reads
+
+The expensive agent (selected by the harness) never sees the full large file; it works with bounded excerpts and implicit context, reducing its token consumption dramatically.
 
 ## Expected behavior
 
@@ -27,7 +35,12 @@ Keep a harness-independent core for path validation, size and line limits, sourc
 
 ## Non-goals
 
-- Replacing or selecting the harness's primary agent model
-- Calling a separate summarization or routing model
+- Replacing or selecting the harness's primary agent model (the cheap interceptor is supplementary, not a replacement)
 - Uploading source code to a ContextLens-operated remote service
 - Depending on the existing Strata file-shunt implementation
+
+## Implementation status
+
+- ✅ Phase 1: Core interceptor (cheap model + excerpt extraction)
+- 🚧 Phase 2: OpenCode adapter (plugin API)
+- 🚧 Phase 3: Copilot CLI adapter (MCP + hook)
