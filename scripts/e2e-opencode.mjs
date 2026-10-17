@@ -2,7 +2,7 @@
 // Uses a temporary XDG_CONFIG_HOME so user plugins/config are isolated; XDG_DATA_HOME
 // remains untouched because it contains OpenCode provider authentication.
 //
-// Scenarios (--scenario happy|persist|fallback|large|all, gated by CONTEXT_LENS_E2E=1):
+// Scenarios (--scenario happy|persist|fallback|large|cache|judge|all, gated by CONTEXT_LENS_E2E=1):
 //   happy    condensed excerpts + confidence, interception < 5s (R001, R003, R005)
 //   persist  two separate `opencode run` processes (= two plugin instances) with a
 //            pre-seeded project config; both must resolve modelSource "project" and the
@@ -13,6 +13,10 @@
 //   fallback a nonexistent subagent model; the read must return the full file and a
 //            context-lens warn `fallback <reason> for <path>` must be logged (R004).
 //   large    a 3000-line fixture with chunk fan-out enabled through the v2 env stopgap.
+//   cache    one run that reads the fixture twice; the second `intercepted` log must carry
+//            cacheHit=true and a tiny elapsed time (in-memory result cache, one process).
+//   judge    CONTEXT_LENS_JUDGE=always; the log must carry judge=<verdict>, or the read must
+//            fall back with judge-rejected. A judge error is non-fatal (warn, excerpts kept).
 import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -151,8 +155,8 @@ async function setupProject(temp, configHome, modelConfig, fixture) {
   return fixturePath;
 }
 
-async function opencodeRun(ctx, temp, configHome, fixturePath, symbol = E2E_FIXTURE_SYMBOL, extraEnv = {}) {
-  const prompt = `Use the read tool to read ${fixturePath} in full (no offset or limit), then tell me what ${symbol} returns.`;
+async function opencodeRun(ctx, temp, configHome, fixturePath, symbol = E2E_FIXTURE_SYMBOL, extraEnv = {}, promptOverride) {
+  const prompt = promptOverride ?? `Use the read tool to read ${fixturePath} in full (no offset or limit), then tell me what ${symbol} returns.`;
   const started = Date.now();
   const result = await run(ctx.binary, ["run", "--standalone", "--auto", "--format", "json", "--print-logs", "--log-level", "debug", "--model", ctx.agentModel, prompt], {
     cwd: temp,
@@ -254,6 +258,43 @@ async function scenarioLarge(ctx, temp, configHome) {
   }
 }
 
+async function scenarioCache(ctx, temp, configHome) {
+  const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
+  const prompt = `Use the read tool to read ${fixturePath} in full (no offset or limit). Then use the read tool to read ${fixturePath} in full again. Then tell me what ${E2E_FIXTURE_SYMBOL} returns.`;
+  const r = await opencodeRun(ctx, temp, configHome, fixturePath, E2E_FIXTURE_SYMBOL, {}, prompt);
+  checkCondensed(r);
+  const intercepts = r.logs.filter((l) => l.level === "info" && /^intercepted /.test(l.message));
+  assertion(intercepts.length >= 2, `expected at least 2 intercepted logs, got ${intercepts.length}:\n${hostDiagnostics(r.transcript)}`);
+  assertion(!intercepts[0].message.includes("cacheHit=true"), "first read unexpectedly reported cacheHit=true");
+  const hit = intercepts.slice(1).find((l) => l.message.includes("cacheHit=true"));
+  assertion(hit, `no later intercepted log reported cacheHit=true:\n${intercepts.map((l) => l.message).join("\n")}`);
+  const cachedElapsedMs = Number(hit.message.match(/(\d+)ms\)$/)?.[1]);
+  assertion(Number.isFinite(cachedElapsedMs) && cachedElapsedMs < 50, `cached interception not fast: ${cachedElapsedMs}ms`);
+  const firstElapsedMs = Number(intercepts[0].message.match(/(\d+)ms\)$/)?.[1]);
+  return { scenario: "cache", ok: true, cacheHit: true, firstElapsedMs, cachedElapsedMs, intercepts: intercepts.length };
+}
+
+async function scenarioJudge(ctx, temp, configHome) {
+  const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
+  const r = await opencodeRun(ctx, temp, configHome, fixturePath, E2E_FIXTURE_SYMBOL, { CONTEXT_LENS_JUDGE: "always" });
+  const rejected = r.logs.find((l) => l.level === "warn" && /^fallback judge-rejected for /.test(l.message));
+  if (rejected) {
+    assertion(r.reads.some((o) => o.includes("fixtureValue400()")), `judge-rejected read did not return the full file:\n${hostDiagnostics(r.transcript)}`);
+    return { scenario: "judge", ok: true, judge: "insufficient", fallbackReason: "judge-rejected", logLine: rejected.message };
+  }
+  // A judge error logs a warn `intercepted ... judge=error ms) judge error: <detail>`; success logs info.
+  const judged = r.logs.find((l) => /^intercepted /.test(l.message) && /judge=(\w+)/.test(l.message));
+  if (judged) {
+    const verdict = judged.message.match(/judge=(\w+)/)[1];
+    checkCondensed(r);
+    if (judged.level === "warn" || verdict === "error") {
+      return { scenario: "judge", ok: true, judge: "error", judgeWarning: judged.message };
+    }
+    return { scenario: "judge", ok: true, judge: verdict };
+  }
+  throw new Error(`no judge verdict in context-lens logs:\n${hostDiagnostics(r.transcript)}`);
+}
+
 async function main() {
   if (process.env.CONTEXT_LENS_E2E !== "1") skip("set CONTEXT_LENS_E2E=1");
   if (!await exists(pluginModule) || !await exists(fixtureModule)) {
@@ -262,9 +303,10 @@ async function main() {
   const binary = await findBinary();
   const binaryProbe = await run(binary, ["--version"], { cwd: root, env: process.env });
   if (binaryProbe.code !== 0) skip("opencode binary not found");
-  const scenarios = { happy: scenarioHappy, persist: scenarioPersist, fallback: scenarioFallback, large: scenarioLarge };
+  const scenarios = { happy: scenarioHappy, persist: scenarioPersist, fallback: scenarioFallback, large: scenarioLarge,
+    cache: scenarioCache, judge: scenarioJudge };
   if (scenario !== "all" && !scenarios[scenario]) {
-    throw new Error("--scenario must be happy, persist, fallback, large, or all");
+    throw new Error("--scenario must be happy, persist, fallback, large, cache, judge, or all");
   }
   const fixtureMod = await import(pathToFileURL(fixtureModule));
   E2E_FIXTURE_LINES = fixtureMod.E2E_FIXTURE_LINES;
@@ -321,6 +363,8 @@ async function main() {
     fallbackReason: by("fallback")?.fallbackReason,
     chunks: by("large")?.chunks,
     concurrencyPinned: by("large")?.concurrencyPinned,
+    cacheHit: by("cache")?.cacheHit,
+    judge: by("judge")?.judge,
   }));
   if (failure || results.length !== names.length) process.exit(1);
 }
