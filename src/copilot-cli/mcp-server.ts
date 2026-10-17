@@ -111,6 +111,7 @@ export async function handleContextLensRead(args: unknown, deps: ReadDependencie
   const filePath = resolve(deps.cwd, args.path);
   const ranged = Object.prototype.hasOwnProperty.call(args, "start_line") || Object.prototype.hasOwnProperty.call(args, "end_line");
   if (ranged || deps.env.CONTEXT_LENS_CHILD === "1") {
+    deps.interceptor.noteBypass();
     if ((Object.prototype.hasOwnProperty.call(args, "start_line") && !validLine(args.start_line)) ||
         (Object.prototype.hasOwnProperty.call(args, "end_line") && !validLine(args.end_line))) {
       return toolText("context-lens: invalid range", true);
@@ -162,7 +163,7 @@ export function createMcpServer(options: McpServerOptions = {}) {
     runner: runner ??= createCopilotRunner(), modelResolver: selector.resolve,
     thresholdLines: options.thresholdLines, timeoutMs: options.timeoutMs, maxFileBytes: options.maxFileBytes,
     maxRetries: options.maxRetries, retryDelayMs: options.retryDelayMs,
-    logger: (event) => log(event.intercepted ? "info" : event.fallbackReason ? "warn" : "debug", describeEvent(event), { ...event }),
+    logger: (event) => log(event.intercepted ? "info" : event.fallbackReason ? "warn" : "debug", describeEvent(event), { ...event, stats: interceptor!.stats() }),
   });
   return {
     async handleMessage(msg: unknown): Promise<JsonRpcResponse | undefined> {

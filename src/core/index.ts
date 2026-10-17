@@ -1,5 +1,5 @@
-export { ReadInterceptor, interceptRead } from "./interceptor.js";
-export type { InterceptOptions, InterceptionEvent } from "./interceptor.js";
+export { ReadInterceptor, interceptRead, estimateTokens } from "./interceptor.js";
+export type { InterceptOptions, InterceptionEvent, InterceptStats } from "./interceptor.js";
 export type {
   AgentContext,
   ReadRequest,

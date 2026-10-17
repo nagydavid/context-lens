@@ -1,11 +1,14 @@
+import { createHash } from "crypto";
 import { resolve } from "path";
 import { readTextFile, statFile } from "./file-guard.js";
 import type {
   FallbackReason,
   InterceptionResult,
   ReadRequest,
+  SubagentAnswer,
 } from "./models.js";
 import { normalizeRanges, parseSubagentResult, sliceExcerpts } from "./parse.js";
+import type { ParseOutcome } from "./parse.js";
 import { buildSubagentPrompt } from "./prompts.js";
 import { resolveQuestion } from "./question.js";
 import { SUBAGENT_ANSWER_SCHEMA } from "./subagent.js";
@@ -17,6 +20,29 @@ const DEFAULT_THRESHOLD_LINES = 350;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 100;
+// Below this a delegation costs more than it saves, even past the line threshold.
+const DEFAULT_MIN_TOKENS = 1_000;
+// Long-line files (minified, generated) are intercepted on size even under the line threshold.
+const DEFAULT_THRESHOLD_TOKENS = 8_000;
+const DEFAULT_CACHE_SIZE = 64;
+
+// ponytail: chars/4 is a lightweight estimate, not a tokenizer; swap one in only if the thresholds need precision.
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Counters for one interceptor. Token figures are estimates (chars/4); counts and ms are measured. */
+export interface InterceptStats {
+  intercepted: number;
+  passthrough: number;
+  bypassed: number;
+  fallbacks: number;
+  cacheHits: number;
+  delegations: number;
+  delegationMs: number;
+  estTokensSaved: number;
+  estTokensDelegated: number;
+}
 
 export interface InterceptionEvent {
   filePath: string;
@@ -30,6 +56,11 @@ export interface InterceptionEvent {
   detail?: string;
   fileBytes?: number;
   attempts?: number;
+  cacheHit?: boolean;
+  /** Estimated tokens kept out of the primary model's context. */
+  estTokensSaved?: number;
+  /** Estimated tokens sent to the cheap model (absent on cache hits). */
+  estTokensDelegated?: number;
 }
 
 export interface InterceptOptions {
@@ -38,6 +69,12 @@ export interface InterceptOptions {
   retryDelayMs?: number;
   runner?: SubagentRunner;
   thresholdLines?: number;
+  /** Skip delegation under this estimated size even past thresholdLines. */
+  minTokens?: number;
+  /** Intercept at this estimated size even under thresholdLines. */
+  thresholdTokens?: number;
+  /** Max cached delegations (exact prompt+model match, in memory); 0 disables. */
+  cacheSize?: number;
   timeoutMs?: number;
   model?: { providerID: string; modelID: string };
   modelResolver?: () => Promise<ResolvedModel | undefined>;
@@ -64,9 +101,45 @@ function errorMessage(error: unknown): string {
 
 export class ReadInterceptor {
   private readonly options: InterceptOptions;
+  private readonly cache = new Map<string, SubagentAnswer>();
+  private readonly counters: InterceptStats = {
+    intercepted: 0,
+    passthrough: 0,
+    bypassed: 0,
+    fallbacks: 0,
+    cacheHits: 0,
+    delegations: 0,
+    delegationMs: 0,
+    estTokensSaved: 0,
+    estTokensDelegated: 0,
+  };
 
   constructor(options: InterceptOptions = {}) {
     this.options = options;
+  }
+
+  stats(): InterceptStats {
+    return { ...this.counters };
+  }
+
+  /** Harness adapters call this when they skip interception (ranged read, child session, ...). */
+  noteBypass(): void {
+    this.counters.bypassed++;
+  }
+
+  private record(event: InterceptionEvent): void {
+    const c = this.counters;
+    if (event.intercepted) {
+      c.intercepted++;
+      c.estTokensSaved += event.estTokensSaved ?? 0;
+    } else if (event.fallbackReason) c.fallbacks++;
+    else c.passthrough++;
+    if (event.cacheHit) c.cacheHits++;
+    else if (event.estTokensDelegated !== undefined) {
+      c.delegations++;
+      c.delegationMs += event.elapsedMs ?? 0;
+      c.estTokensDelegated += event.estTokensDelegated;
+    }
   }
 
   async intercept(request: ReadRequest): Promise<InterceptionResult> {
@@ -131,7 +204,11 @@ export class ReadInterceptor {
         ...metadata,
       });
 
-      if (lineCount <= thresholdLines) {
+      const fileTokens = estimateTokens(fileContent);
+      const eligible =
+        fileTokens >= (this.options.thresholdTokens ?? DEFAULT_THRESHOLD_TOKENS) ||
+        (lineCount > thresholdLines && fileTokens >= (this.options.minTokens ?? DEFAULT_MIN_TOKENS));
+      if (!eligible) {
         const result = fullFileResult();
         event = { filePath, lineCount, intercepted: false };
         return result;
@@ -182,16 +259,29 @@ export class ReadInterceptor {
         questionSource: resolvedQuestion.source,
         agentContext,
       });
+      // The prompt embeds path, content, question and context, so prompt+model is the whole cache identity.
+      const cacheKey = createHash("sha256")
+        .update(`${model?.providerID}/${model?.modelID}\0${prompt}`)
+        .digest("hex");
+      const cached = this.cacheGet(cacheKey);
       const startedAt = performance.now();
       let elapsedMs: number;
       const attemptState = { attempts: 0 };
       const attemptsField = () =>
         attemptState.attempts > 1 ? { attempts: attemptState.attempts } : {};
+      // Every attempt resends the complete prompt, so retries multiply the cheap-model input.
+      const promptTokens = estimateTokens(prompt);
+      const delegated = () =>
+        cached
+          ? { cacheHit: true }
+          : { estTokensDelegated: promptTokens * Math.max(1, attemptState.attempts) };
 
       try {
-        const response = await this.runWithTimeout(prompt, model, attemptState);
+        const response = cached ? undefined : await this.runWithTimeout(prompt, model, attemptState);
         elapsedMs = performance.now() - startedAt;
-        const parsed = parseSubagentResult(response);
+        const parsed: ParseOutcome = cached
+          ? { ok: true, answer: cached }
+          : parseSubagentResult(response!);
         if (!parsed.ok) {
           const result = fullFileResult(parsed.reason, parsed.detail, {
             ...commonMetadata,
@@ -205,7 +295,8 @@ export class ReadInterceptor {
             questionSource: resolvedQuestion.source,
             fallbackReason: parsed.reason,
             modelSource,
-          ...attemptsField(),
+            ...delegated(),
+            ...attemptsField(),
             detail: modelResolutionDetail ?? parsed.detail,
           };
           return result;
@@ -225,12 +316,14 @@ export class ReadInterceptor {
             questionSource: resolvedQuestion.source,
             fallbackReason: "no-valid-excerpts",
             modelSource,
-          ...attemptsField(),
+            ...delegated(),
+            ...attemptsField(),
             ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}),
           };
           return result;
         }
 
+        if (!cached) this.cacheSet(cacheKey, parsed.answer);
         const excerpts = sliceExcerpts(lines, ranges);
         const totalLinesReturned = excerpts.reduce(
           (sum, excerpt) => sum + excerpt.endLine - excerpt.startLine + 1,
@@ -258,6 +351,14 @@ export class ReadInterceptor {
           confidence: parsed.answer.confidence,
           questionSource: resolvedQuestion.source,
           modelSource,
+          estTokensSaved: Math.max(
+            0,
+            fileTokens -
+              estimateTokens(
+                excerpts.map((e) => e.content).join("\n") + parsed.answer.summary
+              )
+          ),
+          ...delegated(),
           ...attemptsField(),
           ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}),
         };
@@ -283,6 +384,7 @@ export class ReadInterceptor {
           questionSource: resolvedQuestion.source,
           fallbackReason: reason,
           modelSource,
+          ...delegated(),
           ...attemptsField(),
           detail: modelResolutionDetail ?? detail,
         };
@@ -310,12 +412,29 @@ export class ReadInterceptor {
         fallback: { reason: "unreadable", detail },
       };
     } finally {
+      this.record(event);
       try {
         this.options.logger?.(event);
       } catch {
         // Observability must not alter read behaviour.
       }
     }
+  }
+
+  private cacheGet(key: string): SubagentAnswer | undefined {
+    const hit = this.cache.get(key);
+    if (hit) {
+      this.cache.delete(key); // refresh LRU position
+      this.cache.set(key, hit);
+    }
+    return hit;
+  }
+
+  private cacheSet(key: string, answer: SubagentAnswer): void {
+    const size = this.options.cacheSize ?? DEFAULT_CACHE_SIZE;
+    if (size <= 0) return;
+    this.cache.set(key, answer);
+    if (this.cache.size > size) this.cache.delete(this.cache.keys().next().value!);
   }
 
   private resolvePath(filePath: string, projectRoot?: string): string {
@@ -367,6 +486,10 @@ export class ReadInterceptor {
   }
 }
 
+/**
+ * One-shot convenience: builds a fresh interceptor, so the cache and stats never outlive the call.
+ * Hold a ReadInterceptor across reads (as the harness adapters do) to benefit from either.
+ */
 export async function interceptRead(
   request: ReadRequest,
   options?: InterceptOptions

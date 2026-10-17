@@ -126,7 +126,13 @@ ContextLens ships two plugin entry points because OpenCode changed its plugin co
 
 The cheap model is chosen from `CONTEXT_LENS_MODEL="provider/model"`, else `.context-lens/config.json` or `~/.config/context-lens/config.json`, else the host default.
 
-Native `read` results over 350 lines are condensed into excerpts with line ranges and a confidence score. Small files and ranged reads (`offset`/`limit`) pass through unchanged.
+Native `read` results over 350 lines (and at least ~1,000 estimated tokens) are condensed into excerpts with line ranges, a confidence score and a list of omitted ranges. Cheap files and ranged reads (`offset`/`limit`) pass through unchanged; very wide files (~8,000+ estimated tokens, e.g. minified or generated) are condensed even under 350 lines. Token counts are estimated as chars/4.
+
+Identical repeat reads (same file content, question, context and model) are served from a 64-entry in-memory cache with no model call; any change misses. Tune with `minTokens`, `thresholdTokens`, `cacheSize` (0 disables) on `ReadInterceptor`. `interceptor.stats()` returns measured counts and delegation time plus *estimated* token savings; the same running totals are attached as `stats` to each existing log event. Nothing leaves the process.
+
+Measure the effect on your own files with `npm run build && node scripts/bench.mjs [file ...]` (uses a fake runner: counts and token figures are estimates, not live latency).
+
+Not done (document-only): a real tokenizer, persistent or semantic caching, and deriving questions from assistant turns - each adds dependencies or state disproportionate to the gain.
 
 ## Copilot CLI
 
