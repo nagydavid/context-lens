@@ -33,7 +33,8 @@
     "build": "tsc",
     "test": "node --test dist/**/*.test.js",
     "type-check": "tsc --noEmit",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "bench": "node scripts/bench.mjs"
   },
   "keywords": [
     "context-window",
