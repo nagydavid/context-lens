@@ -220,4 +220,50 @@ describe("createCopilotHooks", () => {
     deepStrictEqual(seen, ["get", "set", "get"]);
     strictEqual(runner.calls.length, 1);
   });
+
+  describe("resolved tuning", () => {
+    function tunedDir(name: string, tuning: unknown, lines = 320) {
+      const dir = join(tmp, name);
+      mkdirSync(join(dir, ".context-lens"), { recursive: true });
+      writeFileSync(join(dir, ".context-lens", "config.json"), JSON.stringify({ version: 1, tuning }));
+      const path = join(dir, "mid.ts");
+      writeFileSync(path, Array.from({ length: lines }, (_, index) => `const mid${index + 1} = ${index + 1};`).join("\n"));
+      return { dir, path };
+    }
+    const viewIn = (item: { dir: string; path: string }) =>
+      buildViewInput({ path: item.path, workingDirectory: item.dir, text: "original native view" });
+
+    it("(q) applies project tuning per working directory with one hooks instance", async () => {
+      const low = tunedDir("tune-low", { thresholdLines: 300 });
+      const dflt = tunedDir("tune-default", {});
+      const { hooks, runner } = setup();
+      ok((await hooks.onPostToolUse(viewIn(low)))?.modifiedResult);
+      strictEqual(runner.calls.length, 1);
+      strictEqual(await hooks.onPostToolUse(viewIn(dflt)), undefined);
+      strictEqual(runner.calls.length, 1);
+    });
+
+    it("(r) explicit options beat project config", async () => {
+      const item = tunedDir("tune-explicit", { thresholdLines: 300 });
+      const { hooks, runner } = setup({ thresholdLines: 1000 });
+      strictEqual(await hooks.onPostToolUse(viewIn(item)), undefined);
+      strictEqual(runner.calls.length, 0);
+    });
+
+    it("(s) cacheMaxEntries 0 disables repeat-read cache hits", async () => {
+      const item = tunedDir("tune-nocache", { thresholdLines: 300 });
+      const { hooks, runner } = setup({ configOptions: { homeDir: tmp, env: { CONTEXT_LENS_CACHE: "off" } } });
+      await hooks.onPostToolUse(viewIn(item));
+      await hooks.onPostToolUse(viewIn(item));
+      strictEqual(runner.calls.length, 2);
+    });
+
+    it("(t) invalid tuning values warn and fall back to defaults", async () => {
+      const item = tunedDir("tune-invalid", { thresholdLines: "many" });
+      const { hooks, runner, logs } = setup();
+      strictEqual(await hooks.onPostToolUse(viewIn(item)), undefined);
+      strictEqual(runner.calls.length, 0);
+      ok(logs.some(({ record }) => record.level === "warn" && String(record.message).includes("ignoring") && String(record.message).includes("thresholdLines")));
+    });
+  });
 });

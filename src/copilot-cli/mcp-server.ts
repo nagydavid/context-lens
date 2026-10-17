@@ -7,14 +7,17 @@ import {
   ModelSelector,
   ReadInterceptor,
   eventLogLevel,
+  loadTuning,
   readTextFile,
   statFile,
+  tuningToInterceptorOptions,
   type ConfigOptions,
   type InterceptionEvent,
   type ResultCache,
   type InterceptionResult,
   type JudgeOptions,
   type SubagentRunner,
+  type TuningSettings,
 } from "../core/index.js";
 import { renderInterceptionResult } from "../opencode/render.js";
 import { createCopilotRunner } from "./subagent.js";
@@ -167,14 +170,30 @@ export function createMcpServer(options: McpServerOptions = {}) {
     if (logFile) try { appendFileSync(logFile, `${JSON.stringify(record)}\n`, "utf8"); } catch { /* best effort */ }
   };
   const selector = new ModelSelector({ ...options.configOptions, projectRoot: cwd, onWarning: (message) => log("warn", message) });
+  const explicit: Partial<TuningSettings> = {};
+  if (options.thresholdLines !== undefined) explicit.thresholdLines = options.thresholdLines;
+  if (options.timeoutMs !== undefined) explicit.timeoutMs = options.timeoutMs;
+  if (options.concurrency !== undefined) explicit.concurrency = options.concurrency;
+  if (options.chunkLines !== undefined) explicit.chunkLines = options.chunkLines;
+  if (options.chunkOverlapLines !== undefined) explicit.chunkOverlapLines = options.chunkOverlapLines;
+  if (options.judge?.mode !== undefined) explicit.judge = options.judge.mode;
+  const { settings } = loadTuning({
+    ...options.configOptions,
+    env: options.configOptions?.env ?? options.env ?? process.env,
+    projectRoot: cwd,
+    explicit,
+    onWarning: (message) => log("warn", message),
+  });
   let runner = options.runner;
-  const cache = options.cache ?? new LruResultCache();
+  const cache = options.cache ??
+    (settings.cacheMaxEntries > 0 ? new LruResultCache({ maxEntries: settings.cacheMaxEntries }) : undefined);
   let interceptor: ReadInterceptor | undefined;
   const interceptorFor = () => interceptor ??= new ReadInterceptor({
-    cache, runner: runner ??= createCopilotRunner({ concurrency: options.concurrency }), modelResolver: selector.resolve,
-    thresholdLines: options.thresholdLines, chunkLines: options.chunkLines, chunkOverlapLines: options.chunkOverlapLines,
-    timeoutMs: options.timeoutMs, maxFileBytes: options.maxFileBytes,
-    maxRetries: options.maxRetries, retryDelayMs: options.retryDelayMs, judge: options.judge,
+    cache, runner: runner ??= createCopilotRunner({ concurrency: settings.concurrency }), modelResolver: selector.resolve,
+    ...tuningToInterceptorOptions(settings),
+    maxFileBytes: options.maxFileBytes,
+    maxRetries: options.maxRetries, retryDelayMs: options.retryDelayMs,
+    ...(options.judge ? { judge: options.judge } : {}),
     logger: (event) => log(eventLogLevel(event), describeEvent(event), { ...event }),
   });
   return {

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { createMcpServer, serveStdio } from "./mcp-server.js";
-import { createCopilotRunner } from "./subagent.js";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -26,7 +25,6 @@ process.on("SIGINT", stop);
 
 async function main(): Promise<void> {
   const server = createMcpServer({
-    runner: createCopilotRunner(),
     cwd: process.cwd(),
     env: process.env,
   });

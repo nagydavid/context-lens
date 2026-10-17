@@ -139,4 +139,47 @@ describe("MCP context_lens_read", () => {
     strictEqual(test.runner.calls.length, 1);
     ok(logs.some((line) => line.includes("cacheHit=true")));
   });
+
+  describe("resolved tuning", () => {
+    function tuned(name: string, tuning: unknown, body?: string) {
+      const item = project(name, body);
+      mkdirSync(join(item.dir, ".context-lens"), { recursive: true });
+      writeFileSync(join(item.dir, ".context-lens", "config.json"), JSON.stringify({ version: 1, tuning }));
+      return item;
+    }
+    const big = Array.from({ length: 3000 }, (_, index) => `const chunk${index + 1} = ${index + 1};`).join("\n");
+
+    it("chunks reads from project tuning", async () => {
+      const item = tuned("tune-chunk", { chunkLines: 1000, chunkOverlapLines: 50 }, big);
+      const test = server(item.dir);
+      const result = await call(test.mcp, { path: item.relative, question: "Where is the target?" });
+      strictEqual(result.isError, false);
+      strictEqual(test.runner.calls.length, 4);
+    });
+
+    it("runs the judge when config selects mode always", async () => {
+      const item = tuned("tune-judge", { judge: "always" });
+      const runner = new FakeSubagentRunner((request) => request.schema === JUDGE_SCHEMA ? { structured: { verdict: "sufficient" } } : { text: answer });
+      const test = server(item.dir, runner);
+      await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
+      strictEqual(runner.calls.filter((request) => request.schema === JUDGE_SCHEMA).length, 1);
+    });
+
+    it("explicit options beat project config", async () => {
+      const item = tuned("tune-explicit", { chunkLines: 1000, chunkOverlapLines: 50 }, big);
+      const test = server(item.dir, undefined, { chunkLines: 0 });
+      await call(test.mcp, { path: item.relative, question: "Where is the target?" });
+      strictEqual(test.runner.calls.length, 1);
+    });
+
+    it("warns on invalid values and disables the cache with cacheMaxEntries 0", async () => {
+      const item = tuned("tune-invalid", { thresholdLines: -5, cacheMaxEntries: 0 });
+      const logs: string[] = [];
+      const test = server(item.dir, undefined, { stderr: (line) => logs.push(line) });
+      await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
+      await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
+      strictEqual(test.runner.calls.length, 2);
+      ok(logs.some((line) => line.includes("warn") && line.includes("thresholdLines")));
+    });
+  });
 });

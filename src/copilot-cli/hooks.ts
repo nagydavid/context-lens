@@ -5,11 +5,14 @@ import {
   ModelSelector,
   ReadInterceptor,
   eventLogLevel,
+  loadTuning,
+  tuningToInterceptorOptions,
   type ConfigOptions,
   type InterceptionEvent,
   type JudgeOptions,
   type ResultCache,
   type SubagentRunner,
+  type TuningSettings,
 } from "../core/index.js";
 import { renderInterceptionResult } from "../opencode/render.js";
 import { createCopilotRunner } from "./subagent.js";
@@ -119,8 +122,26 @@ export function createCopilotHooks(
     return selector;
   };
 
-  const runner = options.runner ?? createCopilotRunner({ concurrency: options.concurrency });
-  const cache = options.cache ?? new LruResultCache();
+  const explicit: Partial<TuningSettings> = {};
+  if (options.thresholdLines !== undefined) explicit.thresholdLines = options.thresholdLines;
+  if (options.timeoutMs !== undefined) explicit.timeoutMs = options.timeoutMs;
+  if (options.concurrency !== undefined) explicit.concurrency = options.concurrency;
+  if (options.chunkLines !== undefined) explicit.chunkLines = options.chunkLines;
+  if (options.chunkOverlapLines !== undefined) explicit.chunkOverlapLines = options.chunkOverlapLines;
+  if (options.judge?.mode !== undefined) explicit.judge = options.judge.mode;
+  const tuningEnv = options.configOptions?.env ?? options.env ?? process.env;
+  const tuningFor = (projectRoot: string): TuningSettings => loadTuning({
+    ...options.configOptions,
+    env: tuningEnv,
+    projectRoot,
+    explicit,
+    onWarning: (message) => log("warn", message),
+  }).settings;
+
+  const processTuning = tuningFor(process.cwd());
+  const runner = options.runner ?? createCopilotRunner({ concurrency: processTuning.concurrency });
+  const cache = options.cache ??
+    (processTuning.cacheMaxEntries > 0 ? new LruResultCache({ maxEntries: processTuning.cacheMaxEntries }) : undefined);
   const interceptors = new Map<string, ReadInterceptor>();
   const interceptorFor = (workingDirectory: string): ReadInterceptor => {
     let interceptor = interceptors.get(workingDirectory);
@@ -129,14 +150,11 @@ export function createCopilotHooks(
         runner,
         cache,
         modelResolver: selectorFor(workingDirectory).resolve,
-        thresholdLines: options.thresholdLines,
-        chunkLines: options.chunkLines,
-        chunkOverlapLines: options.chunkOverlapLines,
-        timeoutMs: options.timeoutMs,
+        ...tuningToInterceptorOptions(tuningFor(workingDirectory)),
         maxFileBytes: options.maxFileBytes,
         maxRetries: options.maxRetries,
         retryDelayMs: options.retryDelayMs,
-        judge: options.judge,
+        ...(options.judge ? { judge: options.judge } : {}),
         logger: (event) => log(
           eventLogLevel(event),
           describeEvent(event),
