@@ -33,7 +33,7 @@ function setup(extra: Parameters<typeof createCopilotHooks>[0] = {}) {
   const logs: { line: string; record: Record<string, unknown> }[] = [];
   const hooks = createCopilotHooks({
     runner,
-    configOptions: { homeDir: tmp, env: {} },
+    configOptions: { homeDir: tmp, env: {}, projectRoot: tmp },
     env: {},
     logSink: (line, record) => logs.push({ line, record: record as Record<string, unknown> }),
     ...extra,
@@ -107,7 +107,7 @@ describe("createCopilotHooks", () => {
     const logs: { record: Record<string, unknown> }[] = [];
     const hooks = createCopilotHooks({
       runner: new FakeSubagentRunner(() => { throw new Error("boom"); }),
-      configOptions: { homeDir: tmp, env: {} },
+      configOptions: { homeDir: tmp, env: {}, projectRoot: tmp },
       env: {},
       logSink: (_line, record) => logs.push({ record: record as Record<string, unknown> }),
     });
@@ -156,7 +156,7 @@ describe("createCopilotHooks", () => {
       return { structured: answer };
     });
     const fallbackLogs: Array<{ record: Record<string, unknown> }> = [];
-    const fallback = createCopilotHooks({ runner: failing, chunkLines: 1000, chunkOverlapLines: 50, configOptions: { homeDir: tmp, env: {} }, env: {}, logSink: (_line, record) => fallbackLogs.push({ record: record as Record<string, unknown> }) });
+    const fallback = createCopilotHooks({ runner: failing, chunkLines: 1000, chunkOverlapLines: 50, configOptions: { homeDir: tmp, env: {}, projectRoot: tmp }, env: {}, logSink: (_line, record) => fallbackLogs.push({ record: record as Record<string, unknown> }) });
     strictEqual(await fallback.onPostToolUse(view(chunkedPath)), undefined);
     ok(fallbackLogs.some(({ record }) => record.level === "warn" && String(record.message).includes("chunk 2/4: chunk failure")));
   });
@@ -169,7 +169,7 @@ describe("createCopilotHooks", () => {
     ] as const) {
       const runner = new FakeSubagentRunner((request) => request.schema === JUDGE_SCHEMA ? judgeResult : { structured: answer });
       const logs: { line: string; record: Record<string, unknown> }[] = [];
-      const hooks = createCopilotHooks({ runner, judge: { mode: "always" }, configOptions: { homeDir: tmp, env: {} }, env: {}, logSink: (line, record) => logs.push({ line, record: record as Record<string, unknown> }) });
+      const hooks = createCopilotHooks({ runner, judge: { mode: "always" }, configOptions: { homeDir: tmp, env: {}, projectRoot: tmp }, env: {}, logSink: (line, record) => logs.push({ line, record: record as Record<string, unknown> }) });
       const result = await hooks.onPostToolUse(view(largePath));
       strictEqual(Boolean(result?.modifiedResult), intercepted);
       if (intercepted) ok(result?.modifiedResult?.textResultForLlm.includes("[context-lens]"));
@@ -249,6 +249,19 @@ describe("createCopilotHooks", () => {
       strictEqual(runner.calls.length, 1);
     });
 
+    it("(u) process tuning reads configOptions.projectRoot and warns then falls back on invalid values", () => {
+      const item = tunedDir("tune-process-invalid", { concurrency: "invalid" });
+      const { logs } = setup({ configOptions: { homeDir: tmp, env: {}, projectRoot: item.dir } });
+      ok(logs.some((entry) => entry.record.level === "warn" && JSON.stringify(entry.record).includes("concurrency")));
+    });
+
+    it("(v) a clean projectRoot yields no config warnings and exactly the interception record", async () => {
+      const { hooks, logs } = setup();
+      strictEqual(logs.length, 0);
+      ok((await hooks.onPostToolUse(view(largePath)))?.modifiedResult);
+      strictEqual(logs.length, 1);
+    });
+
     it("(r) explicit options beat project config", async () => {
       const item = tunedDir("tune-explicit", { thresholdLines: 300 });
       const { hooks, runner } = setup({ thresholdLines: 1000 });
@@ -258,7 +271,7 @@ describe("createCopilotHooks", () => {
 
     it("(s) cacheMaxEntries 0 disables repeat-read cache hits", async () => {
       const item = tunedDir("tune-nocache", { thresholdLines: 300 });
-      const { hooks, runner } = setup({ configOptions: { homeDir: tmp, env: { CONTEXT_LENS_CACHE: "off" } } });
+      const { hooks, runner } = setup({ configOptions: { homeDir: tmp, env: { CONTEXT_LENS_CACHE: "off" }, projectRoot: tmp } });
       await hooks.onPostToolUse(viewIn(item));
       await hooks.onPostToolUse(viewIn(item));
       strictEqual(runner.calls.length, 2);

@@ -34,7 +34,7 @@ describe("Copilot extension entry", () => {
     const { hooks } = await registerContextLens(fakeJoin, {
       runner: new FakeSubagentRunner({ structured: answer }),
       env: {},
-      configOptions: { homeDir: tmp, env: {} },
+      configOptions: { homeDir: tmp, env: {}, projectRoot: tmp },
       logSink: () => undefined,
     });
 

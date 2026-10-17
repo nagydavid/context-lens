@@ -41,7 +41,7 @@ export interface CopilotHooksOptions {
   maxRetries?: number;
   retryDelayMs?: number;
   judge?: JudgeOptions;
-  configOptions?: Pick<ConfigOptions, "homeDir" | "env">;
+  configOptions?: Pick<ConfigOptions, "homeDir" | "env" | "projectRoot">;
   env?: NodeJS.ProcessEnv;
   logSink?: (line: string, record: object) => void;
 }
@@ -138,7 +138,8 @@ export function createCopilotHooks(
     onWarning: (message) => log("warn", message),
   }).settings;
 
-  const processTuning = tuningFor(process.cwd());
+  // configOptions.projectRoot only picks the project for process-scoped knobs; per-view tuning uses the view workingDirectory.
+  const processTuning = tuningFor(options.configOptions?.projectRoot ?? process.cwd());
   const runner = options.runner ?? createCopilotRunner({ concurrency: processTuning.concurrency });
   const cache = options.cache ??
     (processTuning.cacheMaxEntries > 0 ? new LruResultCache({ maxEntries: processTuning.cacheMaxEntries }) : undefined);

@@ -101,7 +101,7 @@ function hooksFor(
   const hooks = createCopilotHooks({
     runner: createCopilotRunner({ command: "copilot", spawn, env: {} }),
     env: {},
-    configOptions: { homeDir: options.homeDir ?? tmp, env: options.env ?? {} },
+    configOptions: { homeDir: options.homeDir ?? tmp, env: options.env ?? {}, projectRoot: tmp },
     logSink: (_line, record) => logs.push(record as Log),
     retryDelayMs: 1,
     timeoutMs: options.timeoutMs,
