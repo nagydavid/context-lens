@@ -1,4 +1,5 @@
 import { resolve } from "path";
+import { cacheKey, PROMPT_VERSION, sha256, type ResultCache } from "./cache.js";
 import { planChunks } from "./chunking.js";
 import { NetworkError, runChunkedRead, TimeoutError } from "./fanout.js";
 import { readTextFile, statFile } from "./file-guard.js";
@@ -33,6 +34,7 @@ export interface InterceptionEvent {
   attempts?: number;
   chunks?: number;
   judge?: JudgeOutcome;
+  cacheHit?: boolean;
 }
 
 export function eventLogLevel(event: InterceptionEvent): "info" | "warn" | "debug" {
@@ -55,6 +57,7 @@ export interface InterceptOptions {
   modelResolver?: () => Promise<ResolvedModel | undefined>;
   logger?: (event: InterceptionEvent) => void;
   judge?: JudgeOptions;
+  cache?: ResultCache;
 }
 
 function errorMessage(error: unknown): string {
@@ -127,10 +130,39 @@ export class ReadInterceptor {
       const timeoutMs = this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const windows = planChunks(lineCount, { chunkLines: this.options.chunkLines ?? 0, overlapLines: this.options.chunkOverlapLines ?? 0 });
       const chunked = Number.isFinite(this.options.chunkLines) && Number.isInteger(this.options.chunkLines) && this.options.chunkLines! >= 1 && windows.length > 1;
-      if (chunked) {
-        return await this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent: (next) => { event = next; } });
+      const cache = this.options.cache;
+      let key = "";
+      if (cache) {
+        const lookupStart = performance.now();
+        let hit: InterceptionResult | undefined;
+        try {
+          key = cacheKey({
+            contentSha256: sha256(fileContent), question: resolvedQuestion.question, model, promptVersion: PROMPT_VERSION,
+            chunkLines: chunked ? this.options.chunkLines : 0, chunkOverlapLines: chunked ? (this.options.chunkOverlapLines ?? 0) : 0,
+            judgeMode: this.options.judge?.mode ?? "off",
+          });
+          hit = cache.get(key);
+        } catch { hit = undefined; }
+        if (hit) {
+          const elapsedMs = performance.now() - lookupStart;
+          const { attempts: _attempts, ...rest } = hit;
+          event = {
+            filePath, lineCount, intercepted: true, elapsedMs, confidence: hit.confidence, questionSource: resolvedQuestion.source, modelSource,
+            ...(hit.chunks !== undefined ? { chunks: hit.chunks } : {}), ...(hit.judge ? { judge: hit.judge } : {}),
+            ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}), cacheHit: true,
+          };
+          return { ...rest, filePath, cacheHit: true, elapsedMs };
+        }
       }
-      return await this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent: (next) => { event = next; } });
+      const setEvent = (next: InterceptionEvent) => { event = next; };
+      const result = chunked
+        ? await this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent })
+        : await this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent });
+      if (cache && key && result.wasIntercepted && !result.judge?.error) {
+        const { cacheHit: _c, elapsedMs: _e, attempts: _a, ...stripped } = result;
+        try { cache.set(key, stripped); } catch { /* cache is best-effort */ }
+      }
+      return result;
     } catch (error) {
       const detail = errorMessage(error);
       event = { filePath, lineCount, intercepted: false, fallbackReason: "unreadable", ...(modelResolved ? { modelSource } : {}), detail: modelResolutionDetail ?? detail };

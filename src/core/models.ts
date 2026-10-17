@@ -59,6 +59,7 @@ export interface InterceptionResult {
   attempts?: number;
   chunks?: number;
   judge?: JudgeOutcome;
+  cacheHit?: boolean;
   fallback?: { reason: FallbackReason; detail?: string };
 }
 
