@@ -34,7 +34,7 @@ flowchart LR
 
     subgraph Adapters["Thin adapters"]
         OCV2["plugin-v2<br/>ContextLensV2Plugin<br/>id + setup"]
-        CMCP["mcp-server + hook<br/>bounded_read / PreToolUse"]
+        CMCP["extension onPostToolUse view hook<br/>+ MCP context_lens_read"]
     end
 
     subgraph Core["Harness-independent core"]
@@ -44,8 +44,9 @@ flowchart LR
         SR{{"SubagentRunner<br/>interface"}}
     end
 
-    subgraph Runner["Concrete runner (OpenCode)"]
-        SS["SessionSubagentRunner<br/>child sessions"]
+    subgraph Runner["Concrete runners"]
+        SS["SessionSubagentRunner<br/>OpenCode child sessions"]
+        CR["CopilotCliSubagentRunner<br/>copilot -p child process"]
         SER["SerialRunner"]
     end
 
@@ -56,8 +57,11 @@ flowchart LR
     RI --> Q
     RI --> MS
     RI --> SR
-    SR -.implemented by.-> SER --> SS
+    SR -.implemented by.-> SER
+    SER --> SS
+    SER --> CR
     SS --> CM
+    CR --> CM
 ```
 
 ## Read-interception flow
@@ -126,11 +130,53 @@ Native `read` results over 350 lines are condensed into excerpts with line range
 
 ## Copilot CLI
 
-The Copilot CLI adapter exposes a `bounded_read` MCP tool and a `PreToolUse` hook handler that route through the same core interceptor.
+The Copilot CLI adapter provides two supported surfaces: an extension `onPostToolUse` view hook for automatic oversized-read interception, and the explicit `context_lens_read(path, question, start_line?, end_line?)` MCP tool. The MCP tool routes an explicit question through the same core interceptor; a `start_line` or `end_line` range is always returned raw and never condensed.
 
-```ts
-import { listTools, handleBoundedRead, handlePreToolUseHook } from "context-lens/copilot-cli";
+### Extension (automatic view interception)
+
+Build ContextLens first:
+
+```bash
+npm run build
 ```
+
+Install a shim at `.github/extensions/context-lens/extension.mjs` for one project, or at `~/.copilot/extensions/context-lens/extension.mjs` for user scope. The shim must point its second import at the absolute `file://` URL of this built checkout's dist entry:
+
+```js
+import { joinSession } from "@github/copilot-sdk/extension";
+import { registerContextLens } from "file:///abs/path/to/context-lens/dist/copilot-cli/extension-entry.js";
+await registerContextLens(joinSession);
+```
+
+The Copilot host resolves `@github/copilot-sdk/extension`; ContextLens has no runtime dependency on it. `view` results over 350 lines are condensed into excerpts with ranges and confidence. Small files, `view_range` views, directories, and non-view tools pass through unchanged. Any failure returns the full file.
+
+`CONTEXT_LENS_MODEL` forwards only its model ID as `--model`; when unset, the host default is used. `CONTEXT_LENS_LOG_FILE` is the JSONL diagnostics sink for `intercepted` and `fallback` records. `CONTEXT_LENS_CHILD=1` is set automatically on a child `copilot -p` subagent so a child-side ContextLens remains inert. For non-interactive `copilot -p`, the live harness sets `GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS=true` to load extensions.
+
+### MCP server
+
+Configure the stdio server in `~/.copilot/mcp-config.json`:
+
+```json
+{"mcpServers":{"context-lens":{"type":"local","command":"node","args":["/abs/path/to/context-lens/dist/copilot-cli/mcp-entry.js"],"tools":["*"]}}}
+```
+
+Or use an equivalent project-local configuration for one invocation:
+
+```bash
+copilot --additional-mcp-config @mcp-config.json
+```
+
+If the model, file, or parsing path fails, `context_lens_read` returns the full file rather than dropping context. Model choice follows `CONTEXT_LENS_MODEL`, then project configuration, then global configuration.
+
+### Live harness
+
+An authenticated Copilot CLI is required for the opt-in live harness:
+
+```bash
+npm run build && CONTEXT_LENS_E2E=1 node scripts/e2e-copilot.mjs
+```
+
+It runs the happy, pass-through, MCP, and bogus-model scenarios against copilot 1.0.98 in isolated temporary projects and prints PASS or FAIL for each scenario (a failing scenario is retried once). Each run uses a throwaway `COPILOT_HOME` that holds only copies of `~/.copilot/config.json` and `settings.json` (the latter carries the `experimental` flag that enables extensions), so user-level hooks, MCP servers and instructions do not apply; set `CONTEXT_LENS_E2E_SHARED_HOME=1` to use the real `~/.copilot` instead. Without the gate, it prints `SKIP copilot e2e (set CONTEXT_LENS_E2E=1)` and exits 0.
 
 ## Development
 
@@ -146,4 +192,4 @@ npm run type-check # tsc --noEmit
 
 - **Phase 1 - Core interceptor** (cheap model + excerpt extraction, path/size guards, model selection, transient retry/timeout). Complete.
 - **Phase 2 - OpenCode adapter** (v1 factory + v2 `{id, setup}` plugin, child-session runner, model config persistence, live host-contract e2e). Complete - Milestone M001.
-- **Phase 3 - Copilot CLI adapter** (`bounded_read` MCP tool + `PreToolUse` hook implemented; not yet validated against a live host). In progress.
+- **Phase 3 - Copilot CLI adapter** (extension view hook, model config + error matrix, `context_lens_read` MCP server, install path, opt-in live harness). Complete - Milestone M002.

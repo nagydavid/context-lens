@@ -4,6 +4,9 @@
   "description": "Cheap-model read interceptor for coding agents (Spotify Portal pattern)",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "context-lens-mcp": "dist/copilot-cli/mcp-entry.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",

@@ -1,6 +1,6 @@
 import type { FileExcerpt, InterceptionResult } from "../core/index.js";
 
-const HINT =
+export const HINT =
   "Note: this read was condensed by context-lens. Re-read with an explicit offset and limit to see exact or full content; ranged reads are never condensed.";
 
 function renderExcerpt(excerpt: FileExcerpt): string[] {
@@ -15,7 +15,7 @@ function renderExcerpt(excerpt: FileExcerpt): string[] {
 
 export function renderInterceptionResult(
   result: InterceptionResult,
-  options?: { displayPath?: string },
+  options?: { displayPath?: string; hint?: string },
 ): string {
   const out: string[] = [
     `[context-lens] ${options?.displayPath ?? result.filePath}: showing ${result.totalLinesReturned} of ${result.fullLineCount} lines (${Math.round(result.contextSaved)}% context saved)`,
@@ -24,6 +24,6 @@ export function renderInterceptionResult(
   if (result.confidence !== undefined) out.push(`Confidence: ${result.confidence}/5`);
   if (result.summary) out.push(`Summary: ${result.summary}`);
   for (const excerpt of result.excerpts) out.push(...renderExcerpt(excerpt));
-  out.push("", HINT);
+  out.push("", options?.hint ?? HINT);
   return out.join("\n");
 }

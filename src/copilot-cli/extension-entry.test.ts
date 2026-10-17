@@ -1,0 +1,91 @@
+import { ok, strictEqual, throws } from "node:assert";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { after, before, describe, it } from "node:test";
+import { FakeSubagentRunner } from "../core/fake-runner.js";
+import { buildE2eFixture, buildViewInput } from "./probe-fixture.js";
+import { buildExtensionShim, defaultEntryUrl, registerContextLens } from "./extension-entry.js";
+import type { JoinSession } from "./types.js";
+
+const answer = {
+  excerpts: [{ startLine: 232, endLine: 238, reason: "checksum implementation" }],
+  summary: "The checksum implementation normalizes its input.",
+  confidence: 4,
+};
+
+let tmp: string;
+let fixturePath: string;
+before(() => {
+  tmp = mkdtempSync(join(process.cwd(), "context-lens-extension-entry-"));
+  fixturePath = join(tmp, "fixture.ts");
+  writeFileSync(fixturePath, buildE2eFixture());
+});
+after(() => rmSync(tmp, { recursive: true, force: true }));
+
+describe("Copilot extension entry", () => {
+  it("registers hooks and condenses an eligible native view", async () => {
+    const logs: string[] = [];
+    let captured: Parameters<JoinSession>[0] | undefined;
+    const fakeJoin: JoinSession = async (config) => {
+      captured = config;
+      return { log: (message) => logs.push(message) };
+    };
+    const { hooks } = await registerContextLens(fakeJoin, {
+      runner: new FakeSubagentRunner({ structured: answer }),
+      env: {},
+      configOptions: { homeDir: tmp, env: {} },
+      logSink: () => undefined,
+    });
+
+    ok(captured);
+    strictEqual(typeof captured.hooks.onPostToolUse, "function");
+    strictEqual(typeof captured.hooks.onUserPromptSubmitted, "function");
+    const result = await hooks.onPostToolUse(buildViewInput({
+      path: fixturePath,
+      workingDirectory: tmp,
+      text: "original native view",
+    }));
+    ok(result?.modifiedResult?.textResultForLlm.includes("[context-lens]"));
+    ok(result?.modifiedResult?.textResultForLlm.includes("Confidence:"));
+    ok(logs.some((line) => line.includes("intercepted")));
+  });
+
+  it("builds an SDK-free shim that imports the compiled entry", async () => {
+    const shim = buildExtensionShim(pathToFileURL(fixturePath).href);
+    ok(shim.includes('import { joinSession } from "@github/copilot-sdk/extension";'));
+    ok(shim.includes(pathToFileURL(fixturePath).href));
+    ok(!shim.includes("console.log"));
+    throws(() => buildExtensionShim("relative/entry.js"), /file:\/\/ URL or absolute path/);
+
+    const shimDirectory = mkdtempSync(join(tmp, "shim-"));
+    try {
+      const packageDirectory = join(shimDirectory, "node_modules", "@github", "copilot-sdk");
+      mkdirSync(packageDirectory, { recursive: true });
+      writeFileSync(join(packageDirectory, "package.json"), JSON.stringify({
+        name: "@github/copilot-sdk",
+        type: "module",
+        exports: { "./extension": "./extension.js" },
+      }));
+      writeFileSync(join(packageDirectory, "extension.js"), [
+        "export async function joinSession(config) {",
+        "  globalThis.contextLensShimHooks = config.hooks;",
+        "  return { log() {} };",
+        "}",
+        "",
+      ].join("\n"));
+      const shimPath = join(shimDirectory, "extension.mjs");
+      writeFileSync(shimPath, buildExtensionShim(defaultEntryUrl()));
+      await import(`${pathToFileURL(shimPath).href}?test=${Date.now()}`);
+      const registered = (globalThis as typeof globalThis & {
+        contextLensShimHooks?: Record<string, unknown>;
+      }).contextLensShimHooks;
+      ok(registered);
+      strictEqual(typeof registered.onPostToolUse, "function");
+      strictEqual(typeof registered.onUserPromptSubmitted, "function");
+    } finally {
+      delete (globalThis as typeof globalThis & { contextLensShimHooks?: unknown }).contextLensShimHooks;
+      rmSync(shimDirectory, { recursive: true, force: true });
+    }
+  });
+});

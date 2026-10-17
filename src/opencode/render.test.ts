@@ -52,6 +52,12 @@ test("displayPath overrides filePath", () => {
   assert.ok(!out.includes("/repo/big.ts"));
 });
 
+test("custom hint replaces the default hint", () => {
+  const out = renderInterceptionResult(base(), { hint: "Use view_range for the full file." });
+  assert.ok(out.includes("Use view_range for the full file."));
+  assert.ok(!out.includes("Re-read with an explicit offset and limit"));
+});
+
 test("renders reason on the excerpt header", () => {
   const out = renderInterceptionResult(
     base({ excerpts: [{ startLine: 1, endLine: 1, content: "z", reason: "entry point" }] }),
