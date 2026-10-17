@@ -2,7 +2,8 @@ import { resolve } from "path";
 import { planChunks } from "./chunking.js";
 import { NetworkError, runChunkedRead, TimeoutError } from "./fanout.js";
 import { readTextFile, statFile } from "./file-guard.js";
-import type { FallbackReason, InterceptionResult, ReadRequest } from "./models.js";
+import type { FallbackReason, InterceptionResult, JudgeOutcome, ReadRequest } from "./models.js";
+import { buildJudgePrompt, JUDGE_SCHEMA, parseJudgeVerdict, shouldRunJudge, type JudgeOptions } from "./judge.js";
 import { normalizeRanges, parseSubagentResult, sliceExcerpts } from "./parse.js";
 import { buildSubagentPrompt } from "./prompts.js";
 import { resolveQuestion } from "./question.js";
@@ -31,6 +32,7 @@ export interface InterceptionEvent {
   fileBytes?: number;
   attempts?: number;
   chunks?: number;
+  judge?: JudgeOutcome;
 }
 
 export interface InterceptOptions {
@@ -45,6 +47,7 @@ export interface InterceptOptions {
   model?: Model;
   modelResolver?: () => Promise<ResolvedModel | undefined>;
   logger?: (event: InterceptionEvent) => void;
+  judge?: JudgeOptions;
 }
 
 function errorMessage(error: unknown): string {
@@ -150,8 +153,8 @@ export class ReadInterceptor {
     const excerpts = sliceExcerpts(lines, outcome.merged.ranges);
     const totalLinesReturned = countExcerptLines(excerpts);
     const result: InterceptionResult = { filePath, fullLineCount: lines.length, wasIntercepted: true, excerpts, summary: outcome.merged.summary, confidence: outcome.merged.confidence, ...commonMetadata, elapsedMs, totalLinesReturned, contextSaved: contextSaved(lines.length, totalLinesReturned), ...attempts, chunks: windows.length };
-    setEvent({ filePath, lineCount: lines.length, intercepted: true, elapsedMs, confidence: outcome.merged.confidence, questionSource: resolvedQuestion.source, modelSource, ...attempts, chunks: windows.length, ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}) });
-    return result;
+    const event: InterceptionEvent = { filePath, lineCount: lines.length, intercepted: true, elapsedMs, confidence: outcome.merged.confidence, questionSource: resolvedQuestion.source, modelSource, ...attempts, chunks: windows.length, ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}) };
+    return this.applyJudge(args, { result, event });
   }
 
   private async interceptSingle(args: InterceptArgs): Promise<InterceptionResult> {
@@ -169,9 +172,9 @@ export class ReadInterceptor {
       if (!ranges.length) return this.singleFallback("no-valid-excerpts", undefined, args, elapsedMs, attempts());
       const excerpts = sliceExcerpts(lines, ranges);
       const totalLinesReturned = countExcerptLines(excerpts);
-      const result: InterceptionResult = { filePath, fullLineCount: lines.length, wasIntercepted: true, excerpts, summary: parsed.answer.summary, confidence: parsed.answer.confidence, ...commonMetadata, elapsedMs, totalLinesReturned, contextSaved: contextSaved(lines.length, totalLinesReturned) };
-      setEvent({ filePath, lineCount: lines.length, intercepted: true, elapsedMs, confidence: parsed.answer.confidence, questionSource: resolvedQuestion.source, modelSource, ...attempts(), ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}) });
-      return result;
+      const result: InterceptionResult = { filePath, fullLineCount: lines.length, wasIntercepted: true, excerpts, summary: parsed.answer.summary, confidence: parsed.answer.confidence, ...commonMetadata, elapsedMs, totalLinesReturned, contextSaved: contextSaved(lines.length, totalLinesReturned), ...attempts() };
+      const event: InterceptionEvent = { filePath, lineCount: lines.length, intercepted: true, elapsedMs, confidence: parsed.answer.confidence, questionSource: resolvedQuestion.source, modelSource, ...attempts(), ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}) };
+      return this.applyJudge(args, { result, event });
     } catch (error) {
       const reason: FallbackReason = error instanceof TimeoutError ? "timeout" : error instanceof NetworkError ? "network-error" : "subagent-error";
       return this.singleFallback(reason, errorMessage(error), args, performance.now() - startedAt, attempts());
@@ -185,7 +188,55 @@ export class ReadInterceptor {
     return result;
   }
 
-  private async runWithDeadline(prompt: string, model: Model, state: { attempts: number }, deadline: number, timeoutMs: number, isAborted = () => false): Promise<SubagentResult> {
+  private async applyJudge(args: InterceptArgs, success: { result: InterceptionResult; event: InterceptionEvent }): Promise<InterceptionResult> {
+    const { result, event } = success;
+    if (!shouldRunJudge(this.options.judge, result.confidence)) {
+      args.setEvent(event);
+      return result;
+    }
+
+    const configuredTimeout = this.options.judge?.timeoutMs;
+    const judgeTimeout = Number.isFinite(configuredTimeout) && configuredTimeout! > 0
+      ? configuredTimeout!
+      : args.timeoutMs;
+    const startedAt = performance.now();
+    let judge: JudgeOutcome;
+    try {
+      const response = await this.runWithDeadline(
+        buildJudgePrompt({ question: args.resolvedQuestion.question, excerpts: result.excerpts, summary: result.summary }),
+        args.model,
+        { attempts: 0 },
+        Date.now() + judgeTimeout,
+        judgeTimeout,
+        undefined,
+        JUDGE_SCHEMA,
+      );
+      const parsed = parseJudgeVerdict(response);
+      const elapsedMs = performance.now() - startedAt;
+      if (!parsed.ok) {
+        judge = { elapsedMs, error: parsed.detail };
+      } else {
+        judge = { verdict: parsed.verdict, elapsedMs };
+        if (parsed.verdict === "insufficient") {
+          const detail = parsed.reason ?? "judge returned insufficient";
+          const fallback = args.fullFileResult("judge-rejected", parsed.reason, {
+            ...args.commonMetadata, elapsedMs: result.elapsedMs,
+            ...(result.attempts ? { attempts: result.attempts } : {}),
+            ...(result.chunks !== undefined ? { chunks: result.chunks } : {}), judge,
+          });
+          args.setEvent({ filePath: args.filePath, lineCount: args.lines.length, intercepted: false, elapsedMs: result.elapsedMs, questionSource: args.resolvedQuestion.source, fallbackReason: "judge-rejected", modelSource: args.modelSource, ...(result.attempts ? { attempts: result.attempts } : {}), ...(result.chunks !== undefined ? { chunks: result.chunks } : {}), judge, detail });
+          return fallback;
+        }
+      }
+    } catch (error) {
+      judge = { elapsedMs: performance.now() - startedAt, error: errorMessage(error) };
+    }
+    const judged = { ...result, judge };
+    args.setEvent({ ...event, judge });
+    return judged;
+  }
+
+  private async runWithDeadline(prompt: string, model: Model, state: { attempts: number }, deadline: number, timeoutMs: number, isAborted = () => false, schema: Record<string, unknown> = SUBAGENT_ANSWER_SCHEMA): Promise<SubagentResult> {
     const maxRetries = Math.max(0, this.options.maxRetries ?? DEFAULT_MAX_RETRIES);
     const retryDelayMs = this.options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -194,7 +245,7 @@ export class ReadInterceptor {
         if (Date.now() >= deadline || isAborted()) throw new TimeoutError(timeoutMs);
         state.attempts = attempt;
         try {
-          return await this.options.runner!.run({ prompt, schema: SUBAGENT_ANSWER_SCHEMA, timeoutMs: Math.max(1, deadline - Date.now()), model });
+          return await this.options.runner!.run({ prompt, schema, timeoutMs: Math.max(1, deadline - Date.now()), model });
         } catch (error) {
           if (!isTransientError(error)) throw error;
           if (attempt > maxRetries) throw maxRetries > 0 ? new NetworkError(maxRetries, error) : error;
