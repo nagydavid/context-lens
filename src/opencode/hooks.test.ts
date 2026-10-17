@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
+import { ConcurrencyLimitedRunner } from "../core/subagent.js";
 import { createContextLensHooks } from "./hooks.js";
 import type { ContextLensClient, ContextLensHooksOptions } from "./hooks.js";
 
@@ -17,12 +18,15 @@ const tick = () => new Promise((r) => setImmediate(r));
 let tmp: string;
 let largePath: string;
 let smallPath: string;
+let chunkedPath: string;
 before(() => {
   tmp = mkdtempSync(join(tmpdir(), "context-lens-hooks-"));
   largePath = join(tmp, "large.ts");
   smallPath = join(tmp, "small.ts");
   writeFileSync(largePath, Array.from({ length: 400 }, (_, i) => `const line_${i + 1} = ${i + 1};`).join("\n"));
   writeFileSync(smallPath, Array.from({ length: 100 }, (_, i) => `small ${i + 1}`).join("\n"));
+  chunkedPath = join(tmp, "chunked.ts");
+  writeFileSync(chunkedPath, Array.from({ length: 3000 }, (_, i) => `const chunk_${i + 1} = ${i + 1};`).join("\n"));
 });
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -200,7 +204,37 @@ describe("createContextLensHooks", () => {
     }
   });
 
-  it("(k) skips the plugin's own child sessions without deadlocking", { timeout: 5000 }, async () => {
+  it("(k) fans out chunked reads, logs chunks, and preserves serial defaults", async () => {
+    let active = 0;
+    let maxInFlight = 0;
+    const delayed = new FakeSubagentRunner(async () => {
+      active += 1;
+      maxInFlight = Math.max(maxInFlight, active);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+      active -= 1;
+      return { structured: answer };
+    });
+    const logs: Array<{ body: { message: string } }> = [];
+    const client = { ...noopClient, app: { log: async (entry: { body: { message: string } }) => { logs.push(entry); } } } as ContextLensClient;
+    const hooks = createContextLensHooks({ client, directory: tmp, runner: new ConcurrencyLimitedRunner(delayed, 3), chunkLines: 1000, chunkOverlapLines: 50 });
+    const out = mkOutput(chunkedPath);
+    await hooks["tool.execute.after"](call("read", { filePath: chunkedPath }), out);
+    await tick();
+    ok(out.output.includes("lines 10-12"));
+    ok(out.output.includes("const chunk_10 = 10;"));
+    strictEqual(delayed.calls.length, 4);
+    ok(maxInFlight > 1);
+    ok(logs.some((entry) => /chunks=4, \d+ms\)$/.test(entry.body.message)));
+
+    const serialLogs: Array<{ body: { message: string } }> = [];
+    const serial = setup({ client: { ...noopClient, app: { log: async (entry: { body: { message: string } }) => { serialLogs.push(entry); } } } as ContextLensClient });
+    await serial.hooks["tool.execute.after"](call("read", { filePath: chunkedPath }), mkOutput(chunkedPath));
+    await tick();
+    strictEqual(serial.runner.calls.length, 1);
+    ok(serialLogs.some((entry) => /^intercepted /.test(entry.body.message) && !entry.body.message.includes("chunks=")));
+  });
+
+  it("(l) skips the plugin's own child sessions without deadlocking", { timeout: 5000 }, async () => {
     let hooks: ReturnType<typeof createContextLensHooks>;
     const nested = mkOutput(largePath);
     const nestedSnapshot = structuredClone(nested);

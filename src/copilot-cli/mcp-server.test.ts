@@ -72,6 +72,17 @@ describe("MCP context_lens_read", () => {
     const binary = await call(test.mcp, { path: "binary.bin", question: "x" }); strictEqual(binary.isError, true); ok(binary.content[0].text.includes("binary-file"));
   });
 
+  it("renders chunked reads and includes their count in diagnostics", async () => {
+    const item = project("chunked", Array.from({ length: 3000 }, (_, index) => `const chunk${index + 1} = ${index + 1};`).join("\n"));
+    const logs: string[] = [];
+    const test = server(item.dir, new FakeSubagentRunner({ text: answer }), { chunkLines: 1000, chunkOverlapLines: 50, stderr: (line) => logs.push(line) });
+    const result = await call(test.mcp, { path: item.relative, question: "Where is the target?" });
+    strictEqual(result.isError, false);
+    ok(result.content[0].text.includes("--- lines 232-238"));
+    strictEqual(test.runner.calls.length, 4);
+    ok(logs.some((line) => /chunks=4, \d+ms\)/.test(line)));
+  });
+
   it("falls back on runner errors, logs the reason, and blocks child recursion", async () => {
     const item = project("fallback"); const logs: string[] = [];
     const failing = new FakeSubagentRunner(async () => { throw new Error("runner unavailable"); });

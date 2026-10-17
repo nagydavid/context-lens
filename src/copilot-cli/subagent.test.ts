@@ -7,6 +7,7 @@ import {
   buildCopilotChildArgs,
   buildCopilotChildEnv,
   CopilotCliSubagentRunner,
+  createCopilotRunner,
   NO_TOOLS_ARGS,
 } from "./subagent.js";
 import type { ChildLike, SpawnLike } from "./subagent.js";
@@ -89,6 +90,29 @@ describe("CopilotCliSubagentRunner", () => {
     await rejects(run, (error: Error) => error.name === "TimeoutError");
     strictEqual(child.killedWith, "SIGKILL");
     child.emit("close", 0);
+  });
+
+  it("uses the requested factory concurrency while retaining a serial default", async () => {
+    const measure = async (concurrency?: number) => {
+      let active = 0;
+      let max = 0;
+      const spawn: SpawnLike = () => {
+        const child = fakeChild();
+        active += 1;
+        max = Math.max(max, active);
+        setTimeout(() => {
+          active -= 1;
+          child.stdout.end('{"ok":true}');
+          child.emit("close", 0);
+        }, 10);
+        return child;
+      };
+      const runner = createCopilotRunner({ spawn, concurrency });
+      await Promise.all([runner.run(request), runner.run(request)]);
+      return max;
+    };
+    strictEqual(await measure(), 1);
+    strictEqual(await measure(2), 2);
   });
 
   it("builds a probe-shaped view input", () => {

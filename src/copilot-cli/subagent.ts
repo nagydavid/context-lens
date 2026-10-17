@@ -1,6 +1,6 @@
 import { spawn as childProcessSpawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { SerialRunner } from "../core/subagent.js";
+import { ConcurrencyLimitedRunner } from "../core/subagent.js";
 import type { SubagentRequest, SubagentResult, SubagentRunner } from "../core/subagent.js";
 
 export const NO_TOOLS_ARGS = ["--available-tools="] as const;
@@ -121,6 +121,12 @@ export class CopilotCliSubagentRunner implements SubagentRunner {
   }
 }
 
-export function createCopilotRunner(options: CopilotCliSubagentRunnerOptions = {}): SubagentRunner {
-  return new SerialRunner(new CopilotCliSubagentRunner(options));
+export function createCopilotRunner(
+  options: CopilotCliSubagentRunnerOptions & { concurrency?: number } = {},
+): SubagentRunner {
+  const { concurrency, ...runnerOptions } = options;
+  return new ConcurrencyLimitedRunner(
+    new CopilotCliSubagentRunner(runnerOptions),
+    concurrency ?? 1,
+  );
 }

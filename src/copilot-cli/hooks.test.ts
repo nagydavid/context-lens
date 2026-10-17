@@ -15,12 +15,15 @@ const answer = {
 let tmp: string;
 let largePath: string;
 let smallPath: string;
+let chunkedPath: string;
 before(() => {
   tmp = mkdtempSync(join(process.cwd(), "context-lens-copilot-hooks-"));
   largePath = join(tmp, "fixture.ts");
   smallPath = join(tmp, "small.ts");
   writeFileSync(largePath, buildE2eFixture());
   writeFileSync(smallPath, Array.from({ length: 20 }, (_, index) => `const small${index} = ${index};`).join("\n"));
+  chunkedPath = join(tmp, "chunked.ts");
+  writeFileSync(chunkedPath, Array.from({ length: 3000 }, (_, index) => `const chunk${index + 1} = ${index + 1};`).join("\n"));
 });
 after(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -132,7 +135,26 @@ describe("createCopilotHooks", () => {
     strictEqual(runner.calls.length, 1);
   });
 
-  it("(l) appends structured JSONL diagnostics when configured", async () => {
+  it("(l) renders chunked reads and reports chunk failures as host-safe fallbacks", async () => {
+    const { hooks, runner, logs } = setup({ chunkLines: 1000, chunkOverlapLines: 50 });
+    const result = await hooks.onPostToolUse(view(chunkedPath));
+    ok(result?.modifiedResult?.textResultForLlm.includes("--- lines 232-238"));
+    strictEqual(runner.calls.length, 4);
+    ok(logs.some(({ line }) => /chunks=4, \d+ms\)/.test(line)));
+
+    let calls = 0;
+    const failing = new FakeSubagentRunner(() => {
+      calls += 1;
+      if (calls === 2) throw new Error("chunk failure");
+      return { structured: answer };
+    });
+    const fallbackLogs: Array<{ record: Record<string, unknown> }> = [];
+    const fallback = createCopilotHooks({ runner: failing, chunkLines: 1000, chunkOverlapLines: 50, configOptions: { homeDir: tmp, env: {} }, env: {}, logSink: (_line, record) => fallbackLogs.push({ record: record as Record<string, unknown> }) });
+    strictEqual(await fallback.onPostToolUse(view(chunkedPath)), undefined);
+    ok(fallbackLogs.some(({ record }) => record.level === "warn" && String(record.message).includes("chunk 2/4: chunk failure")));
+  });
+
+  it("(m) appends structured JSONL diagnostics when configured", async () => {
     const logFile = join(tmp, "context-lens.jsonl");
     const { hooks } = setup({ env: { CONTEXT_LENS_LOG_FILE: logFile } });
     await hooks.onPostToolUse(view(largePath));

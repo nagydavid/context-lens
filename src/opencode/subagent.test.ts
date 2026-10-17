@@ -185,6 +185,30 @@ describe("SessionSubagentRunner", () => {
     deepStrictEqual(result.structured, { ok: true });
   });
 
+  it("uses the requested factory concurrency while retaining a serial default", async () => {
+    const measure = async (concurrency?: number) => {
+      let active = 0;
+      let max = 0;
+      let nextId = 0;
+      const client: OpenCodeSessionClient = { session: {
+        create: async () => ({ data: { id: `child-${++nextId}` } }),
+        prompt: async () => {
+          active += 1;
+          max = Math.max(max, active);
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 10));
+          active -= 1;
+          return { data: { structured_output: { ok: true } } };
+        },
+        delete: async () => ({}),
+      } };
+      const runner = createOpenCodeRunner(client, concurrency === undefined ? {} : { concurrency });
+      await Promise.all([runner.run(request), runner.run(request)]);
+      return max;
+    };
+    strictEqual(await measure(), 1);
+    strictEqual(await measure(2), 2);
+  });
+
   it("forwards explicit questions through handleOpenCodeRead to a serialized runner", async () => {
     const filePath = join(tmpdir(), `context-lens-opencode-${Date.now()}.txt`);
     const content = Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n");

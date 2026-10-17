@@ -1,4 +1,4 @@
-import { SerialRunner } from "../core/subagent.js";
+import { ConcurrencyLimitedRunner } from "../core/subagent.js";
 import type {
   SubagentRequest,
   SubagentResult,
@@ -192,7 +192,11 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 export function createOpenCodeRunner(
   client: OpenCodeSessionClient,
-  opts?: SessionSubagentRunnerOptions
+  opts: SessionSubagentRunnerOptions & { concurrency?: number } = {}
 ): SubagentRunner {
-  return new SerialRunner(new SessionSubagentRunner(client, opts));
+  const { concurrency, ...sessionOptions } = opts;
+  return new ConcurrencyLimitedRunner(
+    new SessionSubagentRunner(client, sessionOptions),
+    concurrency ?? 1,
+  );
 }

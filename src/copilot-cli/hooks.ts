@@ -24,6 +24,9 @@ type LogLevel = "debug" | "info" | "warn" | "error";
 export interface CopilotHooksOptions {
   runner?: SubagentRunner;
   thresholdLines?: number;
+  chunkLines?: number;
+  chunkOverlapLines?: number;
+  concurrency?: number;
   timeoutMs?: number;
   maxFileBytes?: number;
   maxRetries?: number;
@@ -42,7 +45,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function describeEvent(event: InterceptionEvent): string {
   if (event.intercepted) {
-    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}, ${Math.round(event.elapsedMs ?? 0)}ms)`;
+    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}, ${Math.round(event.elapsedMs ?? 0)}ms)`;
   }
   if (event.fallbackReason) {
     return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}`;
@@ -107,7 +110,7 @@ export function createCopilotHooks(
     return selector;
   };
 
-  const runner = options.runner ?? createCopilotRunner();
+  const runner = options.runner ?? createCopilotRunner({ concurrency: options.concurrency });
   const interceptors = new Map<string, ReadInterceptor>();
   const interceptorFor = (workingDirectory: string): ReadInterceptor => {
     let interceptor = interceptors.get(workingDirectory);
@@ -116,6 +119,8 @@ export function createCopilotHooks(
         runner,
         modelResolver: selectorFor(workingDirectory).resolve,
         thresholdLines: options.thresholdLines,
+        chunkLines: options.chunkLines,
+        chunkOverlapLines: options.chunkOverlapLines,
         timeoutMs: options.timeoutMs,
         maxFileBytes: options.maxFileBytes,
         maxRetries: options.maxRetries,
