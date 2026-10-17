@@ -16,14 +16,14 @@ import { renderInterceptionResult } from "./render.js";
 import { createOpenCodeRunner } from "./subagent.js";
 import type { OpenCodeSessionClient } from "./subagent.js";
 
-export type ContextLensLogLevel = "debug" | "info" | "warn" | "error";
+export type ParaDocLogLevel = "debug" | "info" | "warn" | "error";
 
-export interface ContextLensClient extends OpenCodeSessionClient {
+export interface ParaDocClient extends OpenCodeSessionClient {
   app?: {
     log(opts: {
       body: {
         service: string;
-        level: ContextLensLogLevel;
+        level: ParaDocLogLevel;
         message: string;
         extra?: Record<string, unknown>;
       };
@@ -31,8 +31,8 @@ export interface ContextLensClient extends OpenCodeSessionClient {
   };
 }
 
-export interface ContextLensHooksOptions {
-  client: ContextLensClient;
+export interface ParaDocHooksOptions {
+  client: ParaDocClient;
   directory: string;
   worktree?: string;
   ui?: OpenCodePickerUi;
@@ -54,7 +54,7 @@ export interface ContextLensHooksOptions {
   configOptions?: { homeDir?: string; env?: Record<string, string | undefined> };
 }
 
-export interface ContextLensHooks {
+export interface ParaDocHooks {
   "chat.message": (
     input: {
       sessionID: string;
@@ -95,17 +95,17 @@ function displayPathFor(filePath: string, root: string): string {
   return rel === "" || rel.startsWith("..") || isAbsolute(rel) ? filePath : rel;
 }
 
-export function createContextLensHooks(options: ContextLensHooksOptions): ContextLensHooks {
+export function createParaDocHooks(options: ParaDocHooksOptions): ParaDocHooks {
   const { client, directory } = options;
 
   const log = (
-    level: ContextLensLogLevel,
+    level: ParaDocLogLevel,
     message: string,
     extra?: Record<string, unknown>
   ): void => {
     try {
       const pending = client.app?.log({
-        body: { service: "context-lens", level, message, ...(extra ? { extra } : {}) },
+        body: { service: "paradoc", level, message, ...(extra ? { extra } : {}) },
       });
       void Promise.resolve(pending).catch(() => {});
     } catch {
@@ -134,7 +134,7 @@ export function createContextLensHooks(options: ContextLensHooksOptions): Contex
   const runner =
     options.runner ??
     createOpenCodeRunner(client, {
-      titlePrefix: "context-lens",
+      titlePrefix: "paradoc",
       concurrency: settings.concurrency,
       onSessionCreated: (id) => {
         childSessions.add(id);

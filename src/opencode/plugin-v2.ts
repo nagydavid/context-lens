@@ -1,5 +1,5 @@
-import { createContextLensHooks } from "./hooks.js";
-import type { ContextLensClient, ContextLensLogLevel } from "./hooks.js";
+import { createParaDocHooks } from "./hooks.js";
+import type { ParaDocClient, ParaDocLogLevel } from "./hooks.js";
 
 /**
  * OpenCode v2 plugin definition (`{ id, setup(ctx) }`). v2.0.30 no longer loads the
@@ -9,7 +9,7 @@ import type { ContextLensClient, ContextLensLogLevel } from "./hooks.js";
  */
 type Fn = (...args: any[]) => any;
 
-export interface ContextLensV2Context {
+export interface ParaDocV2Context {
   location?: unknown;
   app?: { log?: Fn } | unknown;
   tool: { hook: Fn };
@@ -32,7 +32,7 @@ function unwrap(value: unknown): Record<string, unknown> | undefined {
   return asRecord(record?.data) ?? record;
 }
 
-function directoryOf(ctx: ContextLensV2Context): string {
+function directoryOf(ctx: ParaDocV2Context): string {
   const location = asRecord(ctx.location);
   for (const key of ["directory", "path", "root"]) {
     const value = location?.[key];
@@ -57,8 +57,8 @@ function positiveInteger(value: string | undefined): number | undefined {
 
 /** @deprecated Superseded by `loadTuning` in core; no longer used by the plugin. */
 export function readFanoutEnv(env: NodeJS.ProcessEnv): { chunkLines?: number; concurrency?: number } {
-  const chunkLines = positiveInteger(env.CONTEXT_LENS_CHUNK_LINES);
-  const concurrency = positiveInteger(env.CONTEXT_LENS_CONCURRENCY);
+  const chunkLines = positiveInteger(env.PARADOC_CHUNK_LINES);
+  const concurrency = positiveInteger(env.PARADOC_CONCURRENCY);
   return {
     ...(chunkLines !== undefined ? { chunkLines } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
@@ -66,11 +66,11 @@ export function readFanoutEnv(env: NodeJS.ProcessEnv): { chunkLines?: number; co
 }
 
 /** Adapts the v2 `ctx.session` API to the client shape the runner was written against. */
-export function createV2Client(ctx: ContextLensV2Context): ContextLensClient {
+export function createV2Client(ctx: ParaDocV2Context): ParaDocClient {
   const appLog = asRecord(ctx.app)?.log;
   return {
     app: {
-      log: async ({ body }: { body: { level: ContextLensLogLevel; message: string; extra?: Record<string, unknown> } }) => {
+      log: async ({ body }: { body: { level: ParaDocLogLevel; message: string; extra?: Record<string, unknown> } }) => {
         if (typeof appLog === "function") {
           try {
             await (appLog as Fn).call(ctx.app, body);
@@ -80,7 +80,7 @@ export function createV2Client(ctx: ContextLensV2Context): ContextLensClient {
           }
         }
         const extra = body.extra ? ` ${JSON.stringify(body.extra)}` : "";
-        process.stderr.write(`[context-lens] ${body.level}: ${body.message}${extra}\n`);
+        process.stderr.write(`[paradoc] ${body.level}: ${body.message}${extra}\n`);
       },
     },
     session: {
@@ -108,12 +108,12 @@ export function createV2Client(ctx: ContextLensV2Context): ContextLensClient {
   };
 }
 
-export const ContextLensV2Plugin = {
-  id: "context-lens",
-  setup(ctx: ContextLensV2Context): void {
+export const ParaDocV2Plugin = {
+  id: "paradoc",
+  setup(ctx: ParaDocV2Context): void {
     const directory = directoryOf(ctx);
-    // Tuning (env, project/global config) is resolved inside createContextLensHooks.
-    const hooks = createContextLensHooks({
+    // Tuning (env, project/global config) is resolved inside createParaDocHooks.
+    const hooks = createParaDocHooks({
       client: createV2Client(ctx),
       directory,
     });

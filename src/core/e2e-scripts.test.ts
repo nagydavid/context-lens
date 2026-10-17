@@ -10,7 +10,7 @@ const TIMEOUT = 60_000;
 
 function gateOffEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  delete env.CONTEXT_LENS_E2E;
+  delete env.PARADOC_E2E;
   return env;
 }
 
@@ -29,12 +29,12 @@ describe("live harness scripts (hermetic guard)", () => {
       strictEqual(run(["--check", script]).status, 0);
     });
 
-    it(`${script} skips without CONTEXT_LENS_E2E`, { timeout: TIMEOUT }, () => {
+    it(`${script} skips without PARADOC_E2E`, { timeout: TIMEOUT }, () => {
       const result = run([script]);
       strictEqual(result.status, 0, result.stderr);
       ok(result.stdout.includes("SKIP"), result.stdout);
       if (script.includes("copilot")) {
-        strictEqual(result.stdout.trim(), "SKIP copilot e2e (set CONTEXT_LENS_E2E=1)");
+        strictEqual(result.stdout.trim(), "SKIP copilot e2e (set PARADOC_E2E=1)");
       }
     });
 

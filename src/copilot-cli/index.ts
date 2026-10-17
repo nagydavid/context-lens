@@ -1,9 +1,9 @@
 export {
   createMcpServer,
   serveStdio,
-  handleContextLensRead,
+  handleParaDocRead,
   toToolResult,
-  CONTEXT_LENS_READ_TOOL,
+  PARADOC_READ_TOOL,
   type McpServerOptions,
 } from "./mcp-server.js";
 export { createCopilotHooks, COPILOT_HINT, type CopilotHooksOptions } from "./hooks.js";
@@ -14,7 +14,7 @@ export {
   NO_TOOLS_ARGS,
 } from "./subagent.js";
 export {
-  registerContextLens,
+  registerParaDoc,
   buildExtensionShim,
   defaultEntryUrl,
 } from "./extension-entry.js";

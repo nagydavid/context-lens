@@ -51,7 +51,7 @@ export function buildCopilotChildArgs(
 export function buildCopilotChildEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = { ...baseEnv };
   delete env.GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS;
-  env.CONTEXT_LENS_CHILD = "1";
+  env.PARADOC_CHILD = "1";
   return env;
 }
 
@@ -63,7 +63,7 @@ export class CopilotCliSubagentRunner implements SubagentRunner {
   private readonly extraArgs: readonly string[];
 
   constructor(options: CopilotCliSubagentRunnerOptions = {}) {
-    this.command = options.command ?? process.env.CONTEXT_LENS_COPILOT_BIN ?? "copilot";
+    this.command = options.command ?? process.env.PARADOC_COPILOT_BIN ?? "copilot";
     this.spawn = options.spawn ?? (childProcessSpawn as unknown as SpawnLike);
     this.cwd = options.cwd ?? tmpdir();
     this.env = options.env ?? process.env;

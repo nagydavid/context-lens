@@ -6,7 +6,7 @@ function errorMessage(error: unknown): string {
 }
 
 function reportError(error: unknown): void {
-  try { process.stderr.write(`[context-lens] error: ${errorMessage(error)}\n`); }
+  try { process.stderr.write(`[paradoc] error: ${errorMessage(error)}\n`); }
   catch { /* stderr is best effort */ }
 }
 
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
     cwd: process.cwd(),
     env: process.env,
   });
-  process.stderr.write("[context-lens] info: mcp server ready\n");
+  process.stderr.write("[paradoc] info: mcp server ready\n");
   await serveStdio(server, { input: process.stdin, output: process.stdout, onError: reportError });
   process.exitCode = 0;
 }

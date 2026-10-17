@@ -3,13 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { ContextLensV2Plugin, createV2Client, readFanoutEnv } from "./plugin-v2.js";
-import type { ContextLensV2Context } from "./plugin-v2.js";
+import { ParaDocV2Plugin, createV2Client, readFanoutEnv } from "./plugin-v2.js";
+import type { ParaDocV2Context } from "./plugin-v2.js";
 
-function makeCtx(overrides: Partial<ContextLensV2Context["session"]> = {}) {
+function makeCtx(overrides: Partial<ParaDocV2Context["session"]> = {}) {
   const calls: Array<[string, unknown]> = [];
   const hooks: Record<string, (event: any) => Promise<void>> = {};
-  const ctx: ContextLensV2Context = {
+  const ctx: ParaDocV2Context = {
     location: { directory: "/tmp/does-not-matter" },
     tool: { hook: (name: string, fn: any) => { hooks[`tool.${name}`] = fn; } },
     session: {
@@ -25,22 +25,22 @@ function makeCtx(overrides: Partial<ContextLensV2Context["session"]> = {}) {
   return { ctx, calls, hooks };
 }
 
-describe("ContextLensV2Plugin (OpenCode v2.0.30 host contract)", () => {
+describe("ParaDocV2Plugin (OpenCode v2.0.30 host contract)", () => {
   it("is a default-exportable definition with id and setup", () => {
-    strictEqual(ContextLensV2Plugin.id, "context-lens");
-    strictEqual(typeof ContextLensV2Plugin.setup, "function");
+    strictEqual(ParaDocV2Plugin.id, "paradoc");
+    strictEqual(typeof ParaDocV2Plugin.setup, "function");
   });
 
   it("registers tool execute.after and session prompt hooks", () => {
     const { ctx, hooks } = makeCtx();
-    ContextLensV2Plugin.setup(ctx);
+    ParaDocV2Plugin.setup(ctx);
     ok(hooks["tool.execute.after"]);
     ok(hooks["session.prompt"]);
   });
 
   it("leaves non-read and failed tool results untouched", async () => {
     const { ctx, hooks } = makeCtx();
-    ContextLensV2Plugin.setup(ctx);
+    ParaDocV2Plugin.setup(ctx);
     const result = { output: "x", content: [{ type: "text", text: "x" }] };
     await hooks["tool.execute.after"]({ tool: "bash", status: "completed", sessionID: "s", id: "c", input: {}, result });
     await hooks["tool.execute.after"]({ tool: "read", status: "error", sessionID: "s", id: "c", input: { path: "/x" } });
@@ -49,30 +49,30 @@ describe("ContextLensV2Plugin (OpenCode v2.0.30 host contract)", () => {
 
   it("swallows malformed prompt events", async () => {
     const { ctx, hooks } = makeCtx();
-    ContextLensV2Plugin.setup(ctx);
+    ParaDocV2Plugin.setup(ctx);
     await hooks["session.prompt"]({ sessionID: "s", prompt: null });
   });
 });
 
-describe("ContextLensV2Plugin tuning", () => {
-  it("honours CONTEXT_LENS_CHUNK_LINES from process env via loadTuning", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "context-lens-v2-"));
+describe("ParaDocV2Plugin tuning", () => {
+  it("honours PARADOC_CHUNK_LINES from process env via loadTuning", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "paradoc-v2-"));
     const saved = { ...process.env };
     try {
-      mkdirSync(join(dir, ".context-lens"));
+      mkdirSync(join(dir, ".paradoc"));
       writeFileSync(
-        join(dir, ".context-lens", "config.json"),
+        join(dir, ".paradoc", "config.json"),
         JSON.stringify({ version: 1, model: { providerID: "p", modelID: "m" } })
       );
       const file = join(dir, "big.ts");
       writeFileSync(file, Array.from({ length: 3000 }, (_, i) => `const v_${i + 1} = ${i + 1};`).join("\n"));
       process.env.HOME = dir;
       process.env.XDG_CONFIG_HOME = join(dir, "xdg");
-      process.env.CONTEXT_LENS_CHUNK_LINES = "1000";
-      process.env.CONTEXT_LENS_CONCURRENCY = "3";
-      delete process.env.CONTEXT_LENS_CACHE;
-      delete process.env.CONTEXT_LENS_THRESHOLD;
-      delete process.env.CONTEXT_LENS_JUDGE;
+      process.env.PARADOC_CHUNK_LINES = "1000";
+      process.env.PARADOC_CONCURRENCY = "3";
+      delete process.env.PARADOC_CACHE;
+      delete process.env.PARADOC_THRESHOLD;
+      delete process.env.PARADOC_JUDGE;
       let generates = 0;
       const { ctx, hooks } = makeCtx({
         generate: async () => {
@@ -81,7 +81,7 @@ describe("ContextLensV2Plugin tuning", () => {
         },
       });
       (ctx as { location?: unknown }).location = { directory: dir };
-      ContextLensV2Plugin.setup(ctx);
+      ParaDocV2Plugin.setup(ctx);
       const result: { output: string; content?: unknown } = { output: "x\n".repeat(3000) };
       await hooks["tool.execute.after"]({ tool: "read", status: "completed", sessionID: "s", id: "c", input: { path: file }, result });
       strictEqual(generates, 4);
@@ -89,7 +89,7 @@ describe("ContextLensV2Plugin tuning", () => {
     } finally {
       for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
       Object.assign(process.env, saved);
-      for (const key of ["CONTEXT_LENS_CHUNK_LINES", "CONTEXT_LENS_CONCURRENCY", "CONTEXT_LENS_CACHE", "CONTEXT_LENS_THRESHOLD", "CONTEXT_LENS_JUDGE"]) {
+      for (const key of ["PARADOC_CHUNK_LINES", "PARADOC_CONCURRENCY", "PARADOC_CACHE", "PARADOC_THRESHOLD", "PARADOC_JUDGE"]) {
         if (saved[key] === undefined) delete process.env[key];
       }
       rmSync(dir, { recursive: true, force: true });
@@ -99,7 +99,7 @@ describe("ContextLensV2Plugin tuning", () => {
 
 describe("readFanoutEnv", () => {
   it("reads positive chunk and concurrency values", () => {
-    deepStrictEqual(readFanoutEnv({ CONTEXT_LENS_CHUNK_LINES: "1000", CONTEXT_LENS_CONCURRENCY: "3" }), {
+    deepStrictEqual(readFanoutEnv({ PARADOC_CHUNK_LINES: "1000", PARADOC_CONCURRENCY: "3" }), {
       chunkLines: 1000,
       concurrency: 3,
     });
@@ -107,9 +107,9 @@ describe("readFanoutEnv", () => {
 
   it("omits absent, garbage, zero, and negative values", () => {
     deepStrictEqual(readFanoutEnv({}), {});
-    deepStrictEqual(readFanoutEnv({ CONTEXT_LENS_CHUNK_LINES: "", CONTEXT_LENS_CONCURRENCY: "" }), {});
-    deepStrictEqual(readFanoutEnv({ CONTEXT_LENS_CHUNK_LINES: "nope", CONTEXT_LENS_CONCURRENCY: "0" }), {});
-    deepStrictEqual(readFanoutEnv({ CONTEXT_LENS_CHUNK_LINES: "-1", CONTEXT_LENS_CONCURRENCY: "-3" }), {});
+    deepStrictEqual(readFanoutEnv({ PARADOC_CHUNK_LINES: "", PARADOC_CONCURRENCY: "" }), {});
+    deepStrictEqual(readFanoutEnv({ PARADOC_CHUNK_LINES: "nope", PARADOC_CONCURRENCY: "0" }), {});
+    deepStrictEqual(readFanoutEnv({ PARADOC_CHUNK_LINES: "-1", PARADOC_CONCURRENCY: "-3" }), {});
   });
 });
 

@@ -21,7 +21,7 @@ const isJudge = (request: SubagentRequest) => request.schema === JUDGE_SCHEMA;
 const approving = (request: SubagentRequest): SubagentResult => isJudge(request) ? { structured: { verdict: "sufficient" } } : answer(request);
 
 async function withFile(content: string, run: (filePath: string, directory: string) => Promise<void>): Promise<void> {
-  const directory = mkdtempSync(join(tmpdir(), "context-lens-cache-"));
+  const directory = mkdtempSync(join(tmpdir(), "paradoc-cache-"));
   const filePath = join(directory, "large.txt");
   writeFileSync(filePath, content);
   try { await run(filePath, directory); } finally { rmSync(directory, { recursive: true, force: true }); }

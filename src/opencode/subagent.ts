@@ -41,7 +41,7 @@ export class SessionSubagentRunner implements SubagentRunner {
     private readonly client: OpenCodeSessionClient,
     opts: SessionSubagentRunnerOptions = {}
   ) {
-    this.titlePrefix = opts.titlePrefix ?? "context-lens";
+    this.titlePrefix = opts.titlePrefix ?? "paradoc";
     this.parentSessionID = opts.parentSessionID;
     this.disableTools = opts.disableTools ?? true;
     this.onSessionCreated = opts.onSessionCreated;

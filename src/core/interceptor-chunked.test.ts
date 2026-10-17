@@ -10,7 +10,7 @@ import { ConcurrencyLimitedRunner, type SubagentRequest, type SubagentResult, ty
 const content = Array.from({ length: 3000 }, (_, index) => `line ${index + 1}`).join("\n");
 
 async function withFile(run: (filePath: string) => Promise<void>): Promise<void> {
-  const directory = mkdtempSync(join(tmpdir(), "context-lens-chunks-"));
+  const directory = mkdtempSync(join(tmpdir(), "paradoc-chunks-"));
   const filePath = join(directory, "large.txt");
   writeFileSync(filePath, content);
   try { await run(filePath); } finally { rmSync(directory, { recursive: true, force: true }); }
@@ -117,7 +117,7 @@ describe("ReadInterceptor chunked fan-out", () => {
       strictEqual(timeout.fallback?.reason, "timeout");
       ok((timeout.elapsedMs ?? Infinity) < 600);
 
-      const shortPath = join(tmpdir(), `context-lens-short-${Date.now()}.txt`);
+      const shortPath = join(tmpdir(), `paradoc-short-${Date.now()}.txt`);
       const shortContent = Array.from({ length: 900 }, (_, index) => `line ${index + 1}`).join("\n");
       writeFileSync(shortPath, shortContent);
       try {

@@ -32,13 +32,13 @@ export interface OpenCodeModelPickerOptions {
 const PROJECT_SCOPE: OpenCodePickerChoice<ConfigScope> = {
   label: "Project",
   value: "project",
-  description: "Save to .context-lens/config.json in this project; you may want to gitignore it.",
+  description: "Save to .paradoc/config.json in this project; you may want to gitignore it.",
 };
 
 const GLOBAL_SCOPE: OpenCodePickerChoice<ConfigScope> = {
   label: "Global",
   value: "global",
-  description: "Save to ~/.config/context-lens/config.json.",
+  description: "Save to ~/.config/paradoc/config.json.",
 };
 
 /** Builds a picker around OpenCode UI primitives without imposing model defaults. */
@@ -52,7 +52,7 @@ export function createOpenCodeModelPicker(
       if (!choice) return undefined;
 
       const scope = await ui.select({
-        title: "Where should Context Lens save this model?",
+        title: "Where should ParaDoc save this model?",
         choices: [PROJECT_SCOPE, GLOBAL_SCOPE],
       });
       if (!scope) return undefined;
@@ -78,7 +78,7 @@ async function selectChoice(
     });
 
     const selected = await ui.select({
-      title: "Choose a cheap model for Context Lens",
+      title: "Choose a cheap model for ParaDoc",
       choices,
     });
     if (selected === undefined) return undefined;

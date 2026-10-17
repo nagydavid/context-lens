@@ -18,7 +18,7 @@ let largePath: string;
 let smallPath: string;
 let chunkedPath: string;
 before(() => {
-  tmp = mkdtempSync(join(process.cwd(), "context-lens-copilot-hooks-"));
+  tmp = mkdtempSync(join(process.cwd(), "paradoc-copilot-hooks-"));
   largePath = join(tmp, "fixture.ts");
   smallPath = join(tmp, "small.ts");
   writeFileSync(largePath, buildE2eFixture());
@@ -60,7 +60,7 @@ describe("createCopilotHooks", () => {
     strictEqual(result.modifiedResult.resultType, input.toolResult.resultType);
     deepStrictEqual(result.modifiedResult.toolTelemetry, input.toolResult.toolTelemetry);
     const text = result.modifiedResult.textResultForLlm;
-    ok(text.includes("[context-lens]"));
+    ok(text.includes("[paradoc]"));
     ok(text.includes("Confidence: 4/5"));
     ok(text.includes("view_range"));
     ok(text.includes(E2E_FIXTURE_SYMBOL));
@@ -98,7 +98,7 @@ describe("createCopilotHooks", () => {
   });
 
   it("(g) ignores child Copilot processes", async () => {
-    const { hooks, runner } = setup({ env: { CONTEXT_LENS_CHILD: "1" } });
+    const { hooks, runner } = setup({ env: { PARADOC_CHILD: "1" } });
     strictEqual(await hooks.onPostToolUse(view(largePath)), undefined);
     strictEqual(runner.calls.length, 0);
   });
@@ -123,7 +123,7 @@ describe("createCopilotHooks", () => {
   });
 
   it("(j) supplies a configured project model to the runner", async () => {
-    const configDir = join(tmp, ".context-lens");
+    const configDir = join(tmp, ".paradoc");
     mkdirSync(configDir, { recursive: true });
     writeFileSync(join(configDir, "config.json"), JSON.stringify({ version: 1, model: { providerID: "test", modelID: "focused" } }));
     try {
@@ -172,15 +172,15 @@ describe("createCopilotHooks", () => {
       const hooks = createCopilotHooks({ runner, judge: { mode: "always" }, configOptions: { homeDir: tmp, env: {}, projectRoot: tmp }, env: {}, logSink: (line, record) => logs.push({ line, record: record as Record<string, unknown> }) });
       const result = await hooks.onPostToolUse(view(largePath));
       strictEqual(Boolean(result?.modifiedResult), intercepted);
-      if (intercepted) ok(result?.modifiedResult?.textResultForLlm.includes("[context-lens]"));
+      if (intercepted) ok(result?.modifiedResult?.textResultForLlm.includes("[paradoc]"));
       ok(logs.some(({ line, record }) => record.level === level && line.includes(expected)));
       strictEqual(runner.calls.filter((request) => request.schema === JUDGE_SCHEMA).length, 1);
     }
   });
 
   it("(n) appends structured JSONL diagnostics when configured", async () => {
-    const logFile = join(tmp, "context-lens.jsonl");
-    const { hooks } = setup({ env: { CONTEXT_LENS_LOG_FILE: logFile } });
+    const logFile = join(tmp, "paradoc.jsonl");
+    const { hooks } = setup({ env: { PARADOC_LOG_FILE: logFile } });
     await hooks.onPostToolUse(view(largePath));
     const record = JSON.parse(readFileSync(logFile, "utf8").trim()) as Record<string, unknown>;
     strictEqual(record.level, "info");
@@ -230,8 +230,8 @@ describe("createCopilotHooks", () => {
   describe("resolved tuning", () => {
     function tunedDir(name: string, tuning: unknown, lines = 320) {
       const dir = join(tmp, name);
-      mkdirSync(join(dir, ".context-lens"), { recursive: true });
-      writeFileSync(join(dir, ".context-lens", "config.json"), JSON.stringify({ version: 1, tuning }));
+      mkdirSync(join(dir, ".paradoc"), { recursive: true });
+      writeFileSync(join(dir, ".paradoc", "config.json"), JSON.stringify({ version: 1, tuning }));
       const path = join(dir, "mid.ts");
       writeFileSync(path, Array.from({ length: lines }, (_, index) => `const mid${index + 1} = ${index + 1};`).join("\n"));
       return { dir, path };
@@ -271,7 +271,7 @@ describe("createCopilotHooks", () => {
 
     it("(s) cacheMaxEntries 0 disables repeat-read cache hits", async () => {
       const item = tunedDir("tune-nocache", { thresholdLines: 300 });
-      const { hooks, runner } = setup({ configOptions: { homeDir: tmp, env: { CONTEXT_LENS_CACHE: "off" }, projectRoot: tmp } });
+      const { hooks, runner } = setup({ configOptions: { homeDir: tmp, env: { PARADOC_CACHE: "off" }, projectRoot: tmp } });
       await hooks.onPostToolUse(viewIn(item));
       await hooks.onPostToolUse(viewIn(item));
       strictEqual(runner.calls.length, 2);

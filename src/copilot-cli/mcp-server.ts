@@ -22,8 +22,8 @@ import {
 import { renderInterceptionResult } from "../opencode/render.js";
 import { createCopilotRunner } from "./subagent.js";
 
-export const CONTEXT_LENS_READ_TOOL = {
-  name: "context_lens_read",
+export const PARADOC_READ_TOOL = {
+  name: "paradoc_read",
   description: "Read a large file with a question; returns only the relevant line ranges with confidence. Use start_line/end_line for exact ranges (never condensed).",
   inputSchema: {
     type: "object",
@@ -39,7 +39,7 @@ export const CONTEXT_LENS_READ_TOOL = {
 } as const;
 
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
-export const MCP_HINT = "Call context_lens_read again with start_line/end_line to see exact content; ranged reads are never condensed.";
+export const MCP_HINT = "Call paradoc_read again with start_line/end_line to see exact content; ranged reads are never condensed.";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 type JsonRpcId = string | number | null;
@@ -95,7 +95,7 @@ function numbered(content: string, startLine = 1): string {
 }
 
 function guardError(read: { error: string; reason: string; detail: string }): ToolResult {
-  return toolText(`context-lens: ${read.error} (${read.reason}): ${read.detail}`, true);
+  return toolText(`paradoc: ${read.error} (${read.reason}): ${read.detail}`, true);
 }
 
 function readGuarded(filePath: string, maxFileBytes?: number) {
@@ -108,38 +108,38 @@ function validLine(value: unknown): value is number {
 }
 
 export function toToolResult(result: InterceptionResult, displayPath: string): ToolResult {
-  if (result.error) return toolText(`context-lens: ${result.error} (${result.fallback?.reason ?? "unreadable"}): ${result.fallback?.detail ?? ""}`, true);
+  if (result.error) return toolText(`paradoc: ${result.error} (${result.fallback?.reason ?? "unreadable"}): ${result.fallback?.detail ?? ""}`, true);
   if (result.wasIntercepted) return toolText(renderInterceptionResult(result, { displayPath, hint: MCP_HINT }));
   const full = result.excerpts[0]?.content ?? "";
   const header = result.fallback
-    ? `[context-lens] fallback: ${result.fallback.reason} — returning full file`
-    : `[context-lens] ${displayPath}: ${result.fullLineCount} lines (not condensed)`;
+    ? `[paradoc] fallback: ${result.fallback.reason} — returning full file`
+    : `[paradoc] ${displayPath}: ${result.fullLineCount} lines (not condensed)`;
   return toolText(`${header}\n${numbered(full)}`);
 }
 
 /** Handles the public tool arguments; ranged reads deliberately bypass interception. */
-export async function handleContextLensRead(args: unknown, deps: ReadDependencies): Promise<ToolResult> {
-  if (!isRecord(args)) return toolText("context-lens: arguments must be an object", true);
-  if (typeof args.path !== "string" || args.path.trim() === "") return toolText("context-lens: path must be a non-empty string", true);
-  if (typeof args.question !== "string" || args.question.trim() === "") return toolText("context-lens: question must be a non-empty string", true);
+export async function handleParaDocRead(args: unknown, deps: ReadDependencies): Promise<ToolResult> {
+  if (!isRecord(args)) return toolText("paradoc: arguments must be an object", true);
+  if (typeof args.path !== "string" || args.path.trim() === "") return toolText("paradoc: path must be a non-empty string", true);
+  if (typeof args.question !== "string" || args.question.trim() === "") return toolText("paradoc: question must be a non-empty string", true);
   const filePath = resolve(deps.cwd, args.path);
   const ranged = Object.prototype.hasOwnProperty.call(args, "start_line") || Object.prototype.hasOwnProperty.call(args, "end_line");
-  if (ranged || deps.env.CONTEXT_LENS_CHILD === "1") {
+  if (ranged || deps.env.PARADOC_CHILD === "1") {
     deps.interceptor.noteBypass();
     if ((Object.prototype.hasOwnProperty.call(args, "start_line") && !validLine(args.start_line)) ||
         (Object.prototype.hasOwnProperty.call(args, "end_line") && !validLine(args.end_line))) {
-      return toolText("context-lens: invalid range", true);
+      return toolText("paradoc: invalid range", true);
     }
     const read = readGuarded(filePath, deps.maxFileBytes);
     if (!read.ok) return guardError(read);
     const lines = read.content.split("\n");
     if (lines.at(-1) === "") lines.pop();
-    if (deps.env.CONTEXT_LENS_CHILD === "1" && !ranged) {
-      return toolText(`[context-lens] ${args.path}: ${lines.length} lines (child process; not condensed)\n${numbered(read.content)}`);
+    if (deps.env.PARADOC_CHILD === "1" && !ranged) {
+      return toolText(`[paradoc] ${args.path}: ${lines.length} lines (child process; not condensed)\n${numbered(read.content)}`);
     }
     const start = (args.start_line as number | undefined) ?? 1;
     const end = Math.min((args.end_line as number | undefined) ?? lines.length, lines.length);
-    if (start > lines.length || start > end) return toolText("context-lens: invalid range", true);
+    if (start > lines.length || start > end) return toolText("paradoc: invalid range", true);
     const content = lines.slice(start - 1, end).join("\n");
     return toolText(renderInterceptionResult({
       filePath,
@@ -163,10 +163,10 @@ function rpcError(id: JsonRpcId, code: number, message: string): JsonRpcResponse
 export function createMcpServer(options: McpServerOptions = {}) {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const logFile = options.logFile ?? env.CONTEXT_LENS_LOG_FILE;
+  const logFile = options.logFile ?? env.PARADOC_LOG_FILE;
   const log = (level: LogLevel, message: string, extra: Record<string, unknown> = {}): void => {
     const record = { time: new Date().toISOString(), level, message, ...extra };
-    const line = `[context-lens] ${level}: ${message} ${JSON.stringify(extra)}`;
+    const line = `[paradoc] ${level}: ${message} ${JSON.stringify(extra)}`;
     try { (options.stderr ?? ((text) => process.stderr.write(text)))(`${line}\n`); } catch { /* best effort */ }
     if (logFile) try { appendFileSync(logFile, `${JSON.stringify(record)}\n`, "utf8"); } catch { /* best effort */ }
   };
@@ -207,13 +207,13 @@ export function createMcpServer(options: McpServerOptions = {}) {
         if (msg.method === "initialize") {
           const requested = isRecord(msg.params) ? msg.params.protocolVersion : undefined;
           const protocolVersion = typeof requested === "string" && (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested) ? requested : SUPPORTED_PROTOCOL_VERSIONS[0];
-          return response(id, { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "context-lens", version: "0.1.0" } });
+          return response(id, { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "paradoc", version: "0.1.0" } });
         }
         if (msg.method === "ping") return response(id, {});
-        if (msg.method === "tools/list") return response(id, { tools: [CONTEXT_LENS_READ_TOOL] });
+        if (msg.method === "tools/list") return response(id, { tools: [PARADOC_READ_TOOL] });
         if (msg.method === "tools/call") {
-          if (!isRecord(msg.params) || msg.params.name !== "context_lens_read") return rpcError(id, -32602, "Invalid params");
-          return response(id, await handleContextLensRead(msg.params.arguments, { cwd, env, interceptor: interceptorFor(), maxFileBytes: options.maxFileBytes }));
+          if (!isRecord(msg.params) || msg.params.name !== "paradoc_read") return rpcError(id, -32602, "Invalid params");
+          return response(id, await handleParaDocRead(msg.params.arguments, { cwd, env, interceptor: interceptorFor(), maxFileBytes: options.maxFileBytes }));
         }
         return rpcError(id, -32601, "Method not found");
       } catch (error) {

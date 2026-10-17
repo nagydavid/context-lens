@@ -4,8 +4,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
-import { createContextLensHooks } from "./hooks.js";
-import type { ContextLensClient, ContextLensHooksOptions } from "./hooks.js";
+import { createParaDocHooks } from "./hooks.js";
+import type { ParaDocClient, ParaDocHooksOptions } from "./hooks.js";
 import type { OpenCodePickerUi } from "./model-picker.js";
 
 const answer = {
@@ -21,7 +21,7 @@ type LogEntry = { service: string; level: string; message: string; extra?: Recor
 let tmp: string;
 let largePath: string;
 before(() => {
-  tmp = mkdtempSync(join(tmpdir(), "context-lens-matrix-"));
+  tmp = mkdtempSync(join(tmpdir(), "paradoc-matrix-"));
   largePath = join(tmp, "large.ts");
   writeFileSync(largePath, Array.from({ length: 400 }, (_, i) => `const line_${i + 1} = ${i + 1};`).join("\n"));
 });
@@ -33,7 +33,7 @@ const noopSession = {
   delete: async () => ({}),
 };
 
-function recordingClient(session: ContextLensClient["session"] = noopSession) {
+function recordingClient(session: ParaDocClient["session"] = noopSession) {
   const logs: LogEntry[] = [];
   const client = {
     session,
@@ -42,13 +42,13 @@ function recordingClient(session: ContextLensClient["session"] = noopSession) {
         logs.push(o.body);
       },
     },
-  } as ContextLensClient;
+  } as ParaDocClient;
   return { client, logs };
 }
 
-function setup(runner: FakeSubagentRunner | undefined, extra: Partial<ContextLensHooksOptions> = {}) {
+function setup(runner: FakeSubagentRunner | undefined, extra: Partial<ParaDocHooksOptions> = {}) {
   const { client, logs } = recordingClient();
-  const hooks = createContextLensHooks({
+  const hooks = createParaDocHooks({
     client,
     directory: tmp,
     runner,
@@ -66,7 +66,7 @@ const call = (tool: string, args: unknown, sessionID = "s1") => ({ tool, session
 const failureLogged = (logs: LogEntry[], reason?: string) =>
   logs.some(
     (l) =>
-      l.service === "context-lens" &&
+      l.service === "paradoc" &&
       (l.level === "error" ||
         (l.level === "warn" &&
           l.extra?.fallbackReason !== undefined &&
@@ -74,10 +74,10 @@ const failureLogged = (logs: LogEntry[], reason?: string) =>
   );
 const fallbackLog = (logs: LogEntry[]) => logs.find((l) => l.extra?.fallbackReason !== undefined);
 const infoLog = (logs: LogEntry[]) =>
-  logs.find((l) => l.service === "context-lens" && l.level === "info" && l.extra?.intercepted === true);
+  logs.find((l) => l.service === "paradoc" && l.level === "info" && l.extra?.intercepted === true);
 
 /** Reads `filePath` through the hook and asserts the host output stayed byte-identical. */
-async function expectFallback(hooks: ReturnType<typeof createContextLensHooks>, filePath: string) {
+async function expectFallback(hooks: ReturnType<typeof createParaDocHooks>, filePath: string) {
   const out = mkOutput(filePath);
   const snapshot = structuredClone(out);
   await hooks["tool.execute.after"](call("read", { filePath }), out);
@@ -98,7 +98,7 @@ describe("error matrix (R004)", () => {
       },
       delete: async () => ({}),
     });
-    const hooks = createContextLensHooks({ client, directory: tmp, configOptions: { homeDir: tmp, env: {} } });
+    const hooks = createParaDocHooks({ client, directory: tmp, configOptions: { homeDir: tmp, env: {} } });
     await expectFallback(hooks, largePath);
     ok(failureLogged(logs, "subagent-error"));
     ok(String(fallbackLog(logs)?.extra?.detail).includes("spawn failed"));
@@ -233,7 +233,7 @@ describe("error matrix (R004)", () => {
   });
 
   it("#11 concurrent reads show one picker", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "context-lens-matrix-pick-"));
+    const dir = mkdtempSync(join(tmpdir(), "paradoc-matrix-pick-"));
     try {
       let selects = 0;
       let inputs = 0;
@@ -263,7 +263,7 @@ describe("error matrix (R004)", () => {
         },
         delete: async () => ({}),
       });
-      const hooks = createContextLensHooks({
+      const hooks = createParaDocHooks({
         client,
         directory: dir,
         ui,
@@ -277,7 +277,7 @@ describe("error matrix (R004)", () => {
       // Identical concurrent reads coalesce into one subagent session.
       strictEqual(sessions, 1);
       strictEqual(maxInFlight, 1);
-      ok(existsSync(join(dir, ".context-lens", "config.json")));
+      ok(existsSync(join(dir, ".paradoc", "config.json")));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

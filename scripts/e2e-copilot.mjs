@@ -54,7 +54,7 @@ async function mcpDisableArgs() {
     const config = JSON.parse(await readFile(configPath, "utf8"));
     const servers = config.mcpServers ?? config.servers ?? {};
     return Object.keys(servers)
-      .filter((name) => name !== "context-lens-e2e")
+      .filter((name) => name !== "paradoc-e2e")
       .flatMap((name) => ["--disable-mcp-server", name]);
   } catch (error) {
     console.warn(`WARN could not parse ${configPath}: ${error.message}`);
@@ -76,7 +76,7 @@ function interceptedRecords(records) {
 }
 
 function findViewResult(logText) {
-  const candidates = logText.match(/[\s\S]{0,600}\[context-lens\][\s\S]{0,3000}/g) ?? [];
+  const candidates = logText.match(/[\s\S]{0,600}\[paradoc\][\s\S]{0,3000}/g) ?? [];
   return candidates.find((candidate) => /Confidence:/.test(candidate) && !/fixtureValue400/.test(candidate));
 }
 
@@ -84,14 +84,14 @@ function findViewResult(logText) {
 // instructions cannot leak in. Only config.json (login state) and settings.json (experimental
 // flag) are copied, and the copy is deleted after the run so no credentials are left in the
 // retained temp project.
-// CONTEXT_LENS_E2E_SHARED_HOME=1 falls back to the real ~/.copilot.
-const sharedHome = process.env.CONTEXT_LENS_E2E_SHARED_HOME === "1";
+// PARADOC_E2E_SHARED_HOME=1 falls back to the real ~/.copilot.
+const sharedHome = process.env.PARADOC_E2E_SHARED_HOME === "1";
 
 async function createIsolatedHome(temp) {
   const home = join(temp, "copilot-home");
   await mkdir(home, { recursive: true });
   const userConfig = join(homedir(), ".copilot", "config.json");
-  assert(await exists(userConfig), `${userConfig} not found; log in with copilot first or set CONTEXT_LENS_E2E_SHARED_HOME=1`);
+  assert(await exists(userConfig), `${userConfig} not found; log in with copilot first or set PARADOC_E2E_SHARED_HOME=1`);
   await copyFile(userConfig, join(home, "config.json"));
   // settings.json carries `experimental: true`, which gates extension loading.
   const userSettings = join(homedir(), ".copilot", "settings.json");
@@ -109,11 +109,11 @@ async function runScenario({
   fixture: buildFixture = (mod) => mod.buildE2eFixture(),
   check,
 }) {
-  const temp = await mkdtemp(join(tmpdir(), "context-lens-copilot-e2e-"));
+  const temp = await mkdtemp(join(tmpdir(), "paradoc-copilot-e2e-"));
   const logDir = join(temp, "logs");
-  const jsonlPath = join(temp, "context-lens.jsonl");
+  const jsonlPath = join(temp, "paradoc.jsonl");
   const transcriptPath = join(temp, "copilot-transcript.txt");
-  const paths = `project=${temp}\nlog-dir=${logDir}\ntranscript=${transcriptPath}\ncontext-lens-log=${jsonlPath}`;
+  const paths = `project=${temp}\nlog-dir=${logDir}\ntranscript=${transcriptPath}\nparadoc-log=${jsonlPath}`;
   let isolatedHome;
   try {
     await mkdir(logDir, { recursive: true });
@@ -123,9 +123,9 @@ async function runScenario({
       writeFile(join(temp, file), content, "utf8"),
     ));
     if (installExtension) {
-      await mkdir(join(temp, ".github", "extensions", "context-lens"), { recursive: true });
+      await mkdir(join(temp, ".github", "extensions", "paradoc"), { recursive: true });
       const extension = await import(pathToFileURL(entryModule).href);
-      await writeFile(join(temp, ".github", "extensions", "context-lens", "extension.mjs"), extension.buildExtensionShim(extension.defaultEntryUrl()), "utf8");
+      await writeFile(join(temp, ".github", "extensions", "paradoc", "extension.mjs"), extension.buildExtensionShim(extension.defaultEntryUrl()), "utf8");
     }
     const init = await run("git", ["init"], { cwd: temp, env: process.env }, 15_000);
     assert(init.code === 0, `git init failed: ${init.stderr.trim()}`);
@@ -139,15 +139,15 @@ async function runScenario({
       "-p", prompt,
       "--allow-all-tools", "--log-dir", logDir, "--log-level", "debug", ...(sharedHome ? await mcpDisableArgs() : []), ...scenarioArgs,
     ];
-    if (process.env.CONTEXT_LENS_E2E_HOST_MODEL) args.push("--model", process.env.CONTEXT_LENS_E2E_HOST_MODEL);
+    if (process.env.PARADOC_E2E_HOST_MODEL) args.push("--model", process.env.PARADOC_E2E_HOST_MODEL);
     const env = {
       ...process.env,
       GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS: "true",
-      CONTEXT_LENS_LOG_FILE: jsonlPath,
+      PARADOC_LOG_FILE: jsonlPath,
       ...(isolatedHome ? { COPILOT_HOME: isolatedHome } : {}),
       ...extraEnv,
     };
-    delete env.CONTEXT_LENS_CHILD;
+    delete env.PARADOC_CHILD;
     const result = await run("copilot", args, { cwd: temp, env });
     const transcript = `${result.stdout}\n--- stderr ---\n${result.stderr}`;
     await writeFile(transcriptPath, transcript, "utf8");
@@ -178,8 +178,8 @@ async function runScenarioWithRetry(scenario) {
     return await runScenario(scenario);
   } catch (error) {
     if (scenario.pinOnChunkError && error.chunkError) {
-      console.warn(`RETRY ${scenario.name} with CONTEXT_LENS_CONCURRENCY=1: ${error.message}${error.paths ? `\n${error.paths}` : ""}`);
-      const pinned = await runScenario({ ...scenario, extraEnv: { ...scenario.extraEnv, CONTEXT_LENS_CONCURRENCY: "1" } });
+      console.warn(`RETRY ${scenario.name} with PARADOC_CONCURRENCY=1: ${error.message}${error.paths ? `\n${error.paths}` : ""}`);
+      const pinned = await runScenario({ ...scenario, extraEnv: { ...scenario.extraEnv, PARADOC_CONCURRENCY: "1" } });
       return { ...pinned, concurrencyPinned: true };
     }
     console.warn(`RETRY ${scenario.name}: ${error.message}${error.paths ? `\n${error.paths}` : ""}`);
@@ -194,8 +194,8 @@ function parseScenarioFilter(argv) {
 
 async function main() {
   const scenarioFilter = parseScenarioFilter(process.argv.slice(2));
-  if (process.env.CONTEXT_LENS_E2E !== "1") {
-    console.log("SKIP copilot e2e (set CONTEXT_LENS_E2E=1)");
+  if (process.env.PARADOC_E2E !== "1") {
+    console.log("SKIP copilot e2e (set PARADOC_E2E=1)");
     return;
   }
   if (!await exists(entryModule) || !await exists(fixtureModule) || !await exists(mcpEntryModule)) throw new Error("run npm run build");
@@ -211,7 +211,7 @@ async function main() {
       name: "happy",
       check: async ({ result, logs, records, logSource, transcriptPath }) => {
         assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
-        assert(/loaded\s+1\s+extension\(s\)|extension.*context-lens|context-lens.*extension/i.test(logs), "extension load evidence missing from debug logs");
+        assert(/loaded\s+1\s+extension\(s\)|extension.*paradoc|paradoc.*extension/i.test(logs), "extension load evidence missing from debug logs");
         assert(findViewResult(logs), "condensed view result with Confidence missing, or fixtureValue400 leaked; see debug logs");
         const intercepted = records.filter((record) => record?.message?.startsWith("intercepted") && Number.isFinite(record?.elapsedMs));
         assert(intercepted.length === 1, `expected exactly one intercepted record, got ${intercepted.length} (${logSource})`);
@@ -228,7 +228,7 @@ async function main() {
       prompt: "Use the view tool to view small.ts in full. Then use the view tool on big.ts with view_range [390, 400]. Report the value of smallFixtureMarker40 and the name of the last function in big.ts.",
       check: async ({ result, transcript, logs, records, logSource, transcriptPath }) => {
         assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
-        assert(/loaded\s+1\s+extension\(s\)|extension.*context-lens|context-lens.*extension/i.test(logs), "extension load evidence missing from debug logs");
+        assert(/loaded\s+1\s+extension\(s\)|extension.*paradoc|paradoc.*extension/i.test(logs), "extension load evidence missing from debug logs");
         const output = `${transcript}\n${logs}`;
         assert(output.includes("smallFixtureMarker40"), "small file marker missing from host output or debug logs");
         assert(output.includes("fixtureValue395"), "ranged view marker missing from host output or debug logs");
@@ -241,14 +241,14 @@ async function main() {
     {
       name: "mcp",
       installExtension: false,
-      prompt: "Call the context_lens_read MCP tool with path big.ts and question 'What does computeLensChecksum return?'. Do not use the view tool. Report the answer.",
+      prompt: "Call the paradoc_read MCP tool with path big.ts and question 'What does computeLensChecksum return?'. Do not use the view tool. Report the answer.",
       extraArgs: async ({ temp, jsonlPath }) => {
         const mcpConfigPath = join(temp, "mcp-config.json");
-        const mcpEnv = { CONTEXT_LENS_LOG_FILE: jsonlPath };
-        if (process.env.CONTEXT_LENS_MODEL) mcpEnv.CONTEXT_LENS_MODEL = process.env.CONTEXT_LENS_MODEL;
+        const mcpEnv = { PARADOC_LOG_FILE: jsonlPath };
+        if (process.env.PARADOC_MODEL) mcpEnv.PARADOC_MODEL = process.env.PARADOC_MODEL;
         await writeFile(mcpConfigPath, JSON.stringify({
           mcpServers: {
-            "context-lens-e2e": {
+            "paradoc-e2e": {
               type: "local",
               command: process.execPath,
               args: [mcpEntryModule],
@@ -268,23 +268,23 @@ async function main() {
     },
     {
       name: "bogus-model",
-      extraEnv: { CONTEXT_LENS_MODEL: "github/definitely-not-a-model" },
+      extraEnv: { PARADOC_MODEL: "github/definitely-not-a-model" },
       check: async ({ result, transcript, logs, records, logSource, transcriptPath }) => {
         assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
-        assert(logSource === "jsonl", "context-lens JSONL log was not written");
+        assert(logSource === "jsonl", "paradoc JSONL log was not written");
         const intercepted = records.some((record) => record?.message?.startsWith("intercepted"));
         if (intercepted) {
           throw new Error("bogus model was accepted by copilot (read was intercepted); live fallback not provable with this model spec");
         }
         assert(`${transcript}\n${logs}`.includes("fixtureValue400"), "full file marker fixtureValue400 did not reach the host output or debug logs");
-        assert(records.some((record) => record?.level === "warn" && record?.fallbackReason && record?.message?.startsWith("fallback")), "fallback warn record missing from context-lens JSONL log");
+        assert(records.some((record) => record?.level === "warn" && record?.fallbackReason && record?.message?.startsWith("fallback")), "fallback warn record missing from paradoc JSONL log");
       },
     },
     {
       name: "large",
       fixture: (mod) => mod.buildLargeE2eFixture(),
       prompt: `Use the view tool to view big.ts in full (no view_range) and then report what ${largeSymbol} returns.`,
-      extraEnv: { CONTEXT_LENS_CHUNK_LINES: "1000", CONTEXT_LENS_CONCURRENCY: "3" },
+      extraEnv: { PARADOC_CHUNK_LINES: "1000", PARADOC_CONCURRENCY: "3" },
       pinOnChunkError: true,
       check: async ({ result, logs, records, logSource, transcriptPath }) => {
         assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
@@ -315,7 +315,7 @@ async function main() {
     },
     {
       name: "judge",
-      extraEnv: { CONTEXT_LENS_JUDGE: "always" },
+      extraEnv: { PARADOC_JUDGE: "always" },
       check: async ({ result, transcript, logs, records, logSource, transcriptPath }) => {
         assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
         const intercepted = interceptedRecords(records);

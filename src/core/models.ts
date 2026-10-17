@@ -1,4 +1,4 @@
-// Type definitions for ContextLens
+// Type definitions for ParaDoc
 
 export interface AgentContext {
   goal?: string;

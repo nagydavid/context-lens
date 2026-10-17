@@ -5,7 +5,7 @@ import { join } from "path";
 import { after, describe, it } from "node:test";
 import { BINARY_SNIFF_BYTES, readTextFile, statFile } from "./file-guard.js";
 
-const dir = mkdtempSync(join(tmpdir(), "context-lens-guard-"));
+const dir = mkdtempSync(join(tmpdir(), "paradoc-guard-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("file guard", () => {

@@ -106,8 +106,8 @@ describe("createOpenCodeModelPicker", () => {
   });
 
   it("persists a picked value through ModelSelector without reopening the UI", async () => {
-    const projectRoot = mkdtempSync(join(tmpdir(), "context-lens-picker-project-"));
-    const homeDir = mkdtempSync(join(tmpdir(), "context-lens-picker-home-"));
+    const projectRoot = mkdtempSync(join(tmpdir(), "paradoc-picker-project-"));
+    const homeDir = mkdtempSync(join(tmpdir(), "paradoc-picker-home-"));
     const ui = new ScriptedUi(["project"], ["openrouter/anthropic/x"]);
     const selector = new ModelSelector({
       projectRoot,

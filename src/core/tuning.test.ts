@@ -16,7 +16,7 @@ function setup(
   tuning: { project?: unknown; global?: unknown } = {},
   env: Record<string, string | undefined> = {},
 ) {
-  const root = mkdtempSync(join(tmpdir(), "context-lens-tuning-"));
+  const root = mkdtempSync(join(tmpdir(), "paradoc-tuning-"));
   roots.push(root);
   const base = {
     projectRoot: join(root, "project"),
@@ -35,12 +35,12 @@ function setup(
 }
 
 const layers = {
-  thresholdLines: [100, 200, 300, 400, "CONTEXT_LENS_THRESHOLD"],
-  timeoutMs: [1000, 2000, 3000, 4000, "CONTEXT_LENS_TIMEOUT_MS"],
-  concurrency: [2, 3, 4, 5, "CONTEXT_LENS_CONCURRENCY"],
-  chunkLines: [100, 200, 300, 400, "CONTEXT_LENS_CHUNK_LINES"],
-  chunkOverlapLines: [5, 6, 7, 8, "CONTEXT_LENS_CHUNK_OVERLAP"],
-  cacheMaxEntries: [10, 20, 30, 40, "CONTEXT_LENS_CACHE"],
+  thresholdLines: [100, 200, 300, 400, "PARADOC_THRESHOLD"],
+  timeoutMs: [1000, 2000, 3000, 4000, "PARADOC_TIMEOUT_MS"],
+  concurrency: [2, 3, 4, 5, "PARADOC_CONCURRENCY"],
+  chunkLines: [100, 200, 300, 400, "PARADOC_CHUNK_LINES"],
+  chunkOverlapLines: [5, 6, 7, 8, "PARADOC_CHUNK_OVERLAP"],
+  cacheMaxEntries: [10, 20, 30, 40, "PARADOC_CACHE"],
 } as const;
 
 describe("tuning precedence", () => {
@@ -71,7 +71,7 @@ describe("tuning precedence", () => {
   }
 
   it("resolves judge across layers", () => {
-    const s = setup({ global: { judge: "always" }, project: { judge: "low-confidence" } }, { CONTEXT_LENS_JUDGE: "off" });
+    const s = setup({ global: { judge: "always" }, project: { judge: "low-confidence" } }, { PARADOC_JUDGE: "off" });
     strictEqual(loadTuning({ ...s.opts, explicit: { judge: "always" } }).sources.judge, "explicit");
     strictEqual(loadTuning(s.opts).sources.judge, "env");
     const t = setup({ global: { judge: "always" }, project: { judge: "low-confidence" } });
@@ -90,7 +90,7 @@ describe("tuning invalid values", () => {
   it("warns and falls through per layer", () => {
     const s = setup(
       { global: { timeoutMs: 9000 }, project: { timeoutMs: 1.5, concurrency: 0 } },
-      { CONTEXT_LENS_TIMEOUT_MS: "12abc", CONTEXT_LENS_THRESHOLD: "-3" },
+      { PARADOC_TIMEOUT_MS: "12abc", PARADOC_THRESHOLD: "-3" },
     );
     const r = loadTuning({ ...s.opts, explicit: { thresholdLines: 0, concurrency: 7 } });
     strictEqual(r.settings.thresholdLines, 350);
@@ -98,13 +98,13 @@ describe("tuning invalid values", () => {
     strictEqual(r.sources.timeoutMs, "global");
     strictEqual(r.settings.concurrency, 7);
     const joined = s.warnings.join("\n");
-    for (const needle of ["explicit thresholdLines", "CONTEXT_LENS_TIMEOUT_MS", "CONTEXT_LENS_THRESHOLD", "tuning.timeoutMs"]) {
+    for (const needle of ["explicit thresholdLines", "PARADOC_TIMEOUT_MS", "PARADOC_THRESHOLD", "tuning.timeoutMs"]) {
       strictEqual(joined.includes(needle), true, needle);
     }
   });
 
   it("rejects non-strict env integers and unknown judge modes", () => {
-    const s = setup({ project: { judge: "sometimes" } }, { CONTEXT_LENS_CHUNK_LINES: "1e3", CONTEXT_LENS_CONCURRENCY: " 2 " });
+    const s = setup({ project: { judge: "sometimes" } }, { PARADOC_CHUNK_LINES: "1e3", PARADOC_CONCURRENCY: " 2 " });
     const r = loadTuning(s.opts);
     strictEqual(r.settings.chunkLines, 0);
     strictEqual(r.settings.judge, "off");
@@ -112,9 +112,9 @@ describe("tuning invalid values", () => {
     strictEqual(s.warnings.length, 2);
   });
 
-  it("treats CONTEXT_LENS_CACHE=off as 0 and rejects other cache words", () => {
-    strictEqual(loadTuning(setup({}, { CONTEXT_LENS_CACHE: "off" }).opts).settings.cacheMaxEntries, 0);
-    const s = setup({}, { CONTEXT_LENS_CACHE: "none" });
+  it("treats PARADOC_CACHE=off as 0 and rejects other cache words", () => {
+    strictEqual(loadTuning(setup({}, { PARADOC_CACHE: "off" }).opts).settings.cacheMaxEntries, 0);
+    const s = setup({}, { PARADOC_CACHE: "none" });
     strictEqual(loadTuning(s.opts).settings.cacheMaxEntries, 64);
     strictEqual(s.warnings.length, 1);
   });

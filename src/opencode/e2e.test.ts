@@ -12,10 +12,10 @@ import {
   buildE2eFixture,
   buildLargeE2eFixture,
 } from "./e2e-fixture.js";
-import { ContextLensPlugin } from "./plugin.js";
+import { ParaDocPlugin } from "./plugin.js";
 
 type LogEntry = { service: string; level: string; message: string; extra?: Record<string, unknown> };
-type Hooks = Awaited<ReturnType<typeof ContextLensPlugin>>;
+type Hooks = Awaited<ReturnType<typeof ParaDocPlugin>>;
 
 const CONFIG = { version: 1, model: { providerID: "openai", modelID: "e2e-fast" } };
 const SESSION = "ses_parent";
@@ -27,19 +27,19 @@ let fixturePath: string;
 let configPath: string;
 let fixture: string;
 const savedEnv: Record<string, string | undefined> = {};
-const ENV_KEYS = ["CONTEXT_LENS_MODEL", "XDG_CONFIG_HOME", "HOME"] as const;
+const ENV_KEYS = ["PARADOC_MODEL", "XDG_CONFIG_HOME", "HOME"] as const;
 
 before(() => {
   for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
-  root = mkdtempSync(join(tmpdir(), "context-lens-e2e-"));
-  delete process.env.CONTEXT_LENS_MODEL;
+  root = mkdtempSync(join(tmpdir(), "paradoc-e2e-"));
+  delete process.env.PARADOC_MODEL;
   process.env.XDG_CONFIG_HOME = join(root, "xdg");
   process.env.HOME = join(root, "home");
   project = join(root, "project");
-  mkdirSync(join(project, ".context-lens"), { recursive: true });
+  mkdirSync(join(project, ".paradoc"), { recursive: true });
   fixture = buildE2eFixture();
   fixturePath = join(project, "big.ts");
-  configPath = join(project, ".context-lens", "config.json");
+  configPath = join(project, ".paradoc", "config.json");
   writeFileSync(fixturePath, fixture);
   writeFileSync(configPath, JSON.stringify(CONFIG));
 });
@@ -109,7 +109,7 @@ const goodAnswer: PromptHandler = async () => ({
 });
 
 async function build(client: unknown): Promise<Hooks> {
-  return ContextLensPlugin({ client, directory: project, worktree: project });
+  return ParaDocPlugin({ client, directory: project, worktree: project });
 }
 
 async function ask(hooks: Hooks) {
@@ -127,7 +127,7 @@ async function ask(hooks: Hooks) {
 }
 
 const infoLog = (logs: LogEntry[]) =>
-  logs.find((l) => l.service === "context-lens" && l.level === "info" && l.extra?.intercepted === true);
+  logs.find((l) => l.service === "paradoc" && l.level === "info" && l.extra?.intercepted === true);
 
 describe("OpenCode host-contract e2e (compiled plugin entry)", () => {
   it("(a) condenses a 400-line read with ranges and confidence under 5s", async () => {
@@ -135,7 +135,7 @@ describe("OpenCode host-contract e2e (compiled plugin entry)", () => {
     const { client, calls, prompts, logs } = fakeClient(goodAnswer);
     const { output, wallMs } = await ask(await build(client));
 
-    ok(output.output.startsWith("[context-lens]"), "rendered header");
+    ok(output.output.startsWith("[paradoc]"), "rendered header");
     ok(output.output.includes("Confidence: 4/5"));
     ok(output.output.includes(`lines ${E2E_FIXTURE_SYMBOL_RANGE.startLine}-${E2E_FIXTURE_SYMBOL_RANGE.endLine}`));
     ok(output.output.includes(`${String(E2E_FIXTURE_SYMBOL_RANGE.startLine).padStart(5, "0")}| export function computeLensChecksum`));
@@ -158,7 +158,7 @@ describe("OpenCode host-contract e2e (compiled plugin entry)", () => {
     const before = readFileSync(configPath);
     const second = fakeClient(goodAnswer);
     const { output } = await ask(await build(second.client));
-    ok(output.output.startsWith("[context-lens]"));
+    ok(output.output.startsWith("[paradoc]"));
     deepStrictEqual(second.prompts[0].model, CONFIG.model);
     strictEqual(infoLog(second.logs)?.extra?.modelSource, "project");
     ok(readFileSync(configPath).equals(before), "config unchanged byte-for-byte");
@@ -194,7 +194,7 @@ describe("OpenCode host-contract e2e (compiled plugin entry)", () => {
     });
     hooks = await build(harness.client);
     const { output } = await ask(hooks);
-    ok(output.output.startsWith("[context-lens]"));
+    ok(output.output.startsWith("[paradoc]"));
     strictEqual(nested!.output, fixture);
     strictEqual(harness.calls.filter((c) => c === "create").length, 1);
   });

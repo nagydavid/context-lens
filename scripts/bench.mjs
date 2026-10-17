@@ -62,7 +62,7 @@ async function measure(filePath, concurrency, cache) {
   return { p50: percentile(times, 50), p95: percentile(times, 95), saved };
 }
 
-const dir = await mkdtemp(join(tmpdir(), "context-lens-bench-"));
+const dir = await mkdtemp(join(tmpdir(), "paradoc-bench-"));
 try {
   const filePath = join(dir, "large.txt");
   await writeFile(filePath, Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join("\n"));

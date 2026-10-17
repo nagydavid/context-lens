@@ -6,8 +6,8 @@ import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
 import { JUDGE_SCHEMA } from "../core/judge.js";
 import { ConcurrencyLimitedRunner } from "../core/subagent.js";
-import { createContextLensHooks } from "./hooks.js";
-import type { ContextLensClient, ContextLensHooksOptions } from "./hooks.js";
+import { createParaDocHooks } from "./hooks.js";
+import type { ParaDocClient, ParaDocHooksOptions } from "./hooks.js";
 
 const answer = {
   excerpts: [{ startLine: 10, endLine: 12, reason: "target" }],
@@ -21,7 +21,7 @@ let largePath: string;
 let smallPath: string;
 let chunkedPath: string;
 before(() => {
-  tmp = mkdtempSync(join(tmpdir(), "context-lens-hooks-"));
+  tmp = mkdtempSync(join(tmpdir(), "paradoc-hooks-"));
   largePath = join(tmp, "large.ts");
   smallPath = join(tmp, "small.ts");
   writeFileSync(largePath, Array.from({ length: 400 }, (_, i) => `const line_${i + 1} = ${i + 1};`).join("\n"));
@@ -37,11 +37,11 @@ const noopClient = {
     prompt: async () => ({}),
     delete: async () => ({}),
   },
-} as ContextLensClient;
+} as ParaDocClient;
 
-function setup(extra: Partial<ContextLensHooksOptions> = {}) {
+function setup(extra: Partial<ParaDocHooksOptions> = {}) {
   const runner = new FakeSubagentRunner({ structured: answer });
-  const hooks = createContextLensHooks({
+  const hooks = createParaDocHooks({
     client: noopClient,
     directory: tmp,
     runner,
@@ -56,7 +56,7 @@ const synthetic = (filePath: string) =>
 const mkOutput = (filePath: string) => ({ title: filePath, output: synthetic(filePath), metadata: { a: 1 } });
 const call = (tool: string, args: unknown, sessionID = "s1") => ({ tool, sessionID, callID: "c1", args });
 
-describe("createContextLensHooks", () => {
+describe("createParaDocHooks", () => {
   it("(a) replaces large file output with rendered excerpts", async () => {
     const { hooks, runner } = setup();
     const out = mkOutput(largePath);
@@ -149,7 +149,7 @@ describe("createContextLensHooks", () => {
       },
       () => Promise.reject(new Error("async")),
     ]) {
-      const client = { ...noopClient, app: { log } } as ContextLensClient;
+      const client = { ...noopClient, app: { log } } as ParaDocClient;
       const { hooks } = setup({ client });
       const out = mkOutput(largePath);
       await hooks["tool.execute.after"](call("read", { filePath: largePath }), out);
@@ -190,15 +190,15 @@ describe("createContextLensHooks", () => {
           logs.push(o);
         },
       },
-    } as ContextLensClient;
-    const dir = mkdtempSync(join(tmpdir(), "context-lens-hooks-cfg-"));
+    } as ParaDocClient;
+    const dir = mkdtempSync(join(tmpdir(), "paradoc-hooks-cfg-"));
     try {
-      mkdirSync(join(dir, ".context-lens"));
-      writeFileSync(join(dir, ".context-lens", "config.json"), "{not json");
+      mkdirSync(join(dir, ".paradoc"));
+      writeFileSync(join(dir, ".paradoc", "config.json"), "{not json");
       const { hooks } = setup({ client, directory: dir });
       await hooks["tool.execute.after"](call("read", { filePath: largePath }), mkOutput(largePath));
       await tick();
-      ok(logs.some((l) => l.body.service === "context-lens" && l.body.level === "info" && l.body.extra?.intercepted === true));
+      ok(logs.some((l) => l.body.service === "paradoc" && l.body.level === "info" && l.body.extra?.intercepted === true));
       ok(logs.some((l) => l.body.level === "warn"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -216,8 +216,8 @@ describe("createContextLensHooks", () => {
       return { structured: answer };
     });
     const logs: Array<{ body: { message: string } }> = [];
-    const client = { ...noopClient, app: { log: async (entry: { body: { message: string } }) => { logs.push(entry); } } } as ContextLensClient;
-    const hooks = createContextLensHooks({ client, directory: tmp, runner: new ConcurrencyLimitedRunner(delayed, 3), chunkLines: 1000, chunkOverlapLines: 50 });
+    const client = { ...noopClient, app: { log: async (entry: { body: { message: string } }) => { logs.push(entry); } } } as ParaDocClient;
+    const hooks = createParaDocHooks({ client, directory: tmp, runner: new ConcurrencyLimitedRunner(delayed, 3), chunkLines: 1000, chunkOverlapLines: 50 });
     const out = mkOutput(chunkedPath);
     await hooks["tool.execute.after"](call("read", { filePath: chunkedPath }), out);
     await tick();
@@ -228,7 +228,7 @@ describe("createContextLensHooks", () => {
     ok(logs.some((entry) => /chunks=4, \d+ms\)$/.test(entry.body.message)));
 
     const serialLogs: Array<{ body: { message: string } }> = [];
-    const serial = setup({ client: { ...noopClient, app: { log: async (entry: { body: { message: string } }) => { serialLogs.push(entry); } } } as ContextLensClient });
+    const serial = setup({ client: { ...noopClient, app: { log: async (entry: { body: { message: string } }) => { serialLogs.push(entry); } } } as ParaDocClient });
     await serial.hooks["tool.execute.after"](call("read", { filePath: chunkedPath }), mkOutput(chunkedPath));
     await tick();
     strictEqual(serial.runner.calls.length, 1);
@@ -236,7 +236,7 @@ describe("createContextLensHooks", () => {
   });
 
   it("(l) skips the plugin's own child sessions without deadlocking", { timeout: 5000 }, async () => {
-    let hooks: ReturnType<typeof createContextLensHooks>;
+    let hooks: ReturnType<typeof createParaDocHooks>;
     const nested = mkOutput(largePath);
     const nestedSnapshot = structuredClone(nested);
     const client = {
@@ -248,8 +248,8 @@ describe("createContextLensHooks", () => {
         },
         delete: async () => ({}),
       },
-    } as ContextLensClient;
-    hooks = createContextLensHooks({
+    } as ParaDocClient;
+    hooks = createParaDocHooks({
       client,
       directory: tmp,
       configOptions: { homeDir: tmp, env: {} },
@@ -268,8 +268,8 @@ describe("createContextLensHooks", () => {
     ] as const) {
       const logs: Array<{ body: { level: string; message: string } }> = [];
       const runner = new FakeSubagentRunner((request) => request.schema === JUDGE_SCHEMA ? judgeResult : { structured: answer });
-      const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ContextLensClient;
-      const hooks = createContextLensHooks({ client, directory: tmp, runner, judge: { mode: "always" }, configOptions: { homeDir: tmp, env: {} } });
+      const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ParaDocClient;
+      const hooks = createParaDocHooks({ client, directory: tmp, runner, judge: { mode: "always" }, configOptions: { homeDir: tmp, env: {} } });
       const out = mkOutput(largePath);
       const original = out.output;
       await hooks["tool.execute.after"](call("read", { filePath: largePath }), out);
@@ -283,7 +283,7 @@ describe("createContextLensHooks", () => {
 
   it("(n) omits judge calls and judge diagnostics when judge is unset", async () => {
     const logs: Array<{ body: { message: string } }> = [];
-    const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ContextLensClient;
+    const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ParaDocClient;
     const { hooks, runner } = setup({ client });
     await hooks["tool.execute.after"](call("read", { filePath: largePath }), mkOutput(largePath));
     await tick();
@@ -293,7 +293,7 @@ describe("createContextLensHooks", () => {
 
   it("(o) serves a repeat read from the shared cache and misses after an edit", async () => {
     const logs: Array<{ body: { message: string } }> = [];
-    const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ContextLensClient;
+    const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ParaDocClient;
     const { hooks, runner } = setup({ client });
     const cachePath = join(tmp, "cache-me.ts");
     writeFileSync(cachePath, Array.from({ length: 400 }, (_, i) => `const cached_${i + 1} = ${i + 1};`).join("\n"));
@@ -312,8 +312,8 @@ describe("createContextLensHooks", () => {
 
   describe("tuning config", () => {
     const writeProjectConfig = (dir: string, tuning: unknown) => {
-      mkdirSync(join(dir, ".context-lens"), { recursive: true });
-      writeFileSync(join(dir, ".context-lens", "config.json"), JSON.stringify({ version: 1, tuning }));
+      mkdirSync(join(dir, ".paradoc"), { recursive: true });
+      writeFileSync(join(dir, ".paradoc", "config.json"), JSON.stringify({ version: 1, tuning }));
     };
     const tuningDir = (name: string, tuning: unknown) => {
       const dir = mkdtempSync(join(tmp, `${name}-`));
@@ -326,11 +326,11 @@ describe("createContextLensHooks", () => {
       return path;
     };
     const mkLogClient = (logs: Array<{ body: { level: string; message: string } }>) =>
-      ({ ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } }) as ContextLensClient;
-    const build = (directory: string, extra: Partial<ContextLensHooksOptions> = {}) => {
+      ({ ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } }) as ParaDocClient;
+    const build = (directory: string, extra: Partial<ParaDocHooksOptions> = {}) => {
       const runner = new FakeSubagentRunner({ structured: answer });
       const logs: Array<{ body: { level: string; message: string } }> = [];
-      const hooks = createContextLensHooks({
+      const hooks = createParaDocHooks({
         client: mkLogClient(logs),
         directory,
         runner,
@@ -389,7 +389,7 @@ describe("createContextLensHooks", () => {
       strictEqual(runner.calls.length, 0);
       ok(logs.some((entry) => entry.body.level === "warn" && entry.body.message.includes("ignoring") && entry.body.message.includes("thresholdLines")));
 
-      const viaEnv = build(dir, { configOptions: { homeDir: tmp, env: { XDG_CONFIG_HOME: join(tmp, "xdg"), CONTEXT_LENS_THRESHOLD: "300" } } });
+      const viaEnv = build(dir, { configOptions: { homeDir: tmp, env: { XDG_CONFIG_HOME: join(tmp, "xdg"), PARADOC_THRESHOLD: "300" } } });
       await viaEnv.hooks["tool.execute.after"](call("read", { filePath: file }), mkOutput(file));
       strictEqual(viaEnv.runner.calls.length, 1);
     });

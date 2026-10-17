@@ -20,7 +20,7 @@ interface Fixture {
 const fixtures: string[] = [];
 
 function fixture(): Fixture {
-  const root = mkdtempSync(join(tmpdir(), "context-lens-config-"));
+  const root = mkdtempSync(join(tmpdir(), "paradoc-config-"));
   fixtures.push(root);
   return {
     projectRoot: join(root, "project"),
@@ -68,7 +68,7 @@ describe("model config", () => {
     const paths = fixture();
     saveModelConfig({ providerID: "project", modelID: "fast" }, "project", options(paths));
 
-    const stored = loadModelConfig(options(paths, { CONTEXT_LENS_MODEL: "openai/gpt-x" }));
+    const stored = loadModelConfig(options(paths, { PARADOC_MODEL: "openai/gpt-x" }));
     strictEqual(stored?.source, "env");
     deepStrictEqual(stored?.choice, { providerID: "openai", modelID: "gpt-x" });
   });
@@ -79,13 +79,13 @@ describe("model config", () => {
     saveModelConfig({ providerID: "project", modelID: "fast" }, "project", options(paths));
 
     const stored = loadModelConfig({
-      ...options(paths, { CONTEXT_LENS_MODEL: "noslash" }),
+      ...options(paths, { PARADOC_MODEL: "noslash" }),
       onWarning: (warning) => warnings.push(warning),
     });
 
     strictEqual(stored?.source, "project");
     strictEqual(warnings.length, 1);
-    strictEqual(warnings[0].includes("CONTEXT_LENS_MODEL"), true);
+    strictEqual(warnings[0].includes("PARADOC_MODEL"), true);
   });
 
   it("warns and returns undefined for corrupt JSON without throwing", () => {
@@ -139,7 +139,7 @@ describe("model config", () => {
     const configOptions = options(paths, { XDG_CONFIG_HOME: xdg });
     const path = saveModelConfig({ providerID: "openai", modelID: "mini" }, "global", configOptions);
 
-    strictEqual(path, join(xdg, "context-lens", "config.json"));
+    strictEqual(path, join(xdg, "paradoc", "config.json"));
     strictEqual(loadModelConfig(configOptions)?.source, "global");
   });
 

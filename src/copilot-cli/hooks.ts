@@ -24,7 +24,7 @@ import type {
 } from "./types.js";
 
 export const COPILOT_HINT =
-  "Note: this view was condensed by context-lens. Re-run view with an explicit view_range to see exact or full content; ranged views are never condensed.";
+  "Note: this view was condensed by paradoc. Re-run view with an explicit view_range to see exact or full content; ranged views are never condensed.";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -86,7 +86,7 @@ export function createCopilotHooks(
 
   const log = (level: LogLevel, message: string, extra: Record<string, unknown> = {}): void => {
     const record = { ts: new Date().toISOString(), level, message, ...extra };
-    const line = `[context-lens] ${level}: ${message} ${JSON.stringify(extra)}`;
+    const line = `[paradoc] ${level}: ${message} ${JSON.stringify(extra)}`;
     try {
       if (options.logSink) options.logSink(line, record);
       else process.stderr.write(`${line}\n`);
@@ -99,9 +99,9 @@ export function createCopilotHooks(
     } catch {
       // Host session logging is best-effort.
     }
-    if (env.CONTEXT_LENS_LOG_FILE) {
+    if (env.PARADOC_LOG_FILE) {
       try {
-        appendFileSync(env.CONTEXT_LENS_LOG_FILE, `${JSON.stringify(record)}\n`, "utf8");
+        appendFileSync(env.PARADOC_LOG_FILE, `${JSON.stringify(record)}\n`, "utf8");
       } catch {
         // Diagnostic persistence is best-effort.
       }
@@ -189,7 +189,7 @@ export function createCopilotHooks(
 
     async onPostToolUse(input: PostToolUseHookInput) {
       try {
-        if (env.CONTEXT_LENS_CHILD === "1") return undefined;
+        if (env.PARADOC_CHILD === "1") return undefined;
         if (input.toolName !== "view") return undefined;
         if (!isRecord(input.toolArgs)) return undefined;
         const path = input.toolArgs.path;

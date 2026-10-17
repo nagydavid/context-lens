@@ -53,7 +53,7 @@ describe("CopilotCliSubagentRunner", () => {
 
   it("removes extension discovery from the child environment", () => {
     const env = buildCopilotChildEnv({ GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS: "x", HOME: "/tmp/home" });
-    strictEqual(env.CONTEXT_LENS_CHILD, "1");
+    strictEqual(env.PARADOC_CHILD, "1");
     strictEqual(env.GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS, undefined);
     strictEqual(env.HOME, "/tmp/home");
   });

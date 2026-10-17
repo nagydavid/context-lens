@@ -14,7 +14,7 @@ const answer = JSON.stringify({
   summary: "The checksum implementation normalizes its input.", confidence: 4,
 });
 let root: string;
-before(() => { root = mkdtempSync(join(tmpdir(), "context-lens-mcp-")); });
+before(() => { root = mkdtempSync(join(tmpdir(), "paradoc-mcp-")); });
 after(() => rmSync(root, { recursive: true, force: true }));
 
 function project(name: string, body = buildE2eFixture()) {
@@ -27,15 +27,15 @@ function server(dir: string, runner = new FakeSubagentRunner({ text: answer }), 
   return { runner, mcp: createMcpServer({ cwd: dir, runner, configOptions: { env: {} }, ...extra }) };
 }
 async function call(mcp: ReturnType<typeof createMcpServer>, arguments_: Record<string, unknown>) {
-  const response = await mcp.handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "context_lens_read", arguments: arguments_ } });
+  const response = await mcp.handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "paradoc_read", arguments: arguments_ } });
   return response!.result as { content: [{ text: string }]; isError: boolean };
 }
 
-describe("MCP context_lens_read", () => {
+describe("MCP paradoc_read", () => {
   it("negotiates initialize, handles notifications, ping, and lists the tool", async () => {
     const { dir } = project("protocol"); const { mcp } = server(dir);
     const init = await mcp.handleMessage({ jsonrpc: "2.0", id: "a", method: "initialize", params: { protocolVersion: "2025-03-26" } });
-    deepStrictEqual(init?.result, { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "context-lens", version: "0.1.0" } });
+    deepStrictEqual(init?.result, { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "paradoc", version: "0.1.0" } });
     const unknown = await mcp.handleMessage({ jsonrpc: "2.0", id: 4, method: "initialize", params: { protocolVersion: "unknown" } });
     strictEqual((unknown!.result as any).protocolVersion, "2025-06-18");
     strictEqual(await mcp.handleMessage({ jsonrpc: "2.0", method: "notifications/initialized" }), undefined);
@@ -48,7 +48,7 @@ describe("MCP context_lens_read", () => {
   it("condenses a large explicit question and leaves a small file raw", async () => {
     const large = project("large"); const largeServer = server(large.dir);
     const result = await call(largeServer.mcp, { path: large.relative, question: "Where is the checksum?" });
-    strictEqual(result.isError, false); ok(result.content[0].text.includes("[context-lens]")); ok(result.content[0].text.includes("Question (explicit):")); ok(result.content[0].text.includes("Confidence: 4/5")); ok(result.content[0].text.includes("--- lines")); strictEqual(largeServer.runner.calls.length, 1);
+    strictEqual(result.isError, false); ok(result.content[0].text.includes("[paradoc]")); ok(result.content[0].text.includes("Question (explicit):")); ok(result.content[0].text.includes("Confidence: 4/5")); ok(result.content[0].text.includes("--- lines")); strictEqual(largeServer.runner.calls.length, 1);
     const small = project("small", "export const tiny = 1;\n"); const smallServer = server(small.dir);
     const raw = await call(smallServer.mcp, { path: small.relative, question: "What is this?" });
     strictEqual(raw.isError, false); ok(raw.content[0].text.includes("not condensed")); ok(raw.content[0].text.includes("00001| export const tiny = 1;")); strictEqual(smallServer.runner.calls.length, 0);
@@ -90,7 +90,7 @@ describe("MCP context_lens_read", () => {
     const test = server(item.dir, failing, { stderr: (line) => logs.push(line) });
     const fallback = await call(test.mcp, { path: item.relative, question: "checksum" });
     strictEqual(fallback.isError, false); ok(fallback.content[0].text.includes("fallback: subagent-error")); ok(fallback.content[0].text.includes("00001|")); ok(logs.some((line) => line.includes("warn") && line.includes("subagent-error")));
-    const childRunner = new FakeSubagentRunner({ text: answer }); const child = server(item.dir, childRunner, { env: { CONTEXT_LENS_CHILD: "1" } });
+    const childRunner = new FakeSubagentRunner({ text: answer }); const child = server(item.dir, childRunner, { env: { PARADOC_CHILD: "1" } });
     const childResult = await call(child.mcp, { path: item.relative, question: "checksum" }); ok(childResult.content[0].text.includes("child process; not condensed")); strictEqual(childRunner.calls.length, 0);
   });
 
@@ -105,7 +105,7 @@ describe("MCP context_lens_read", () => {
       const runner = new FakeSubagentRunner((request) => request.schema === JUDGE_SCHEMA ? judgeResult : { text: answer });
       const test = server(item.dir, runner, { judge: { mode: "always" }, stderr: (line) => logs.push(line) });
       const result = await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
-      strictEqual(result.content[0].text.includes("[context-lens]"), true);
+      strictEqual(result.content[0].text.includes("[paradoc]"), true);
       strictEqual(result.content[0].text.includes("--- lines"), intercepted);
       if (!intercepted) ok(result.content[0].text.includes("fallback: judge-rejected"));
       ok(logs.some((line) => line.includes(level) && line.includes(expected)));
@@ -143,8 +143,8 @@ describe("MCP context_lens_read", () => {
   describe("resolved tuning", () => {
     function tuned(name: string, tuning: unknown, body?: string) {
       const item = project(name, body);
-      mkdirSync(join(item.dir, ".context-lens"), { recursive: true });
-      writeFileSync(join(item.dir, ".context-lens", "config.json"), JSON.stringify({ version: 1, tuning }));
+      mkdirSync(join(item.dir, ".paradoc"), { recursive: true });
+      writeFileSync(join(item.dir, ".paradoc", "config.json"), JSON.stringify({ version: 1, tuning }));
       return item;
     }
     const big = Array.from({ length: 3000 }, (_, index) => `const chunk${index + 1} = ${index + 1};`).join("\n");

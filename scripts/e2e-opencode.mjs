@@ -2,7 +2,7 @@
 // Uses a temporary XDG_CONFIG_HOME so user plugins/config are isolated; XDG_DATA_HOME
 // remains untouched because it contains OpenCode provider authentication.
 //
-// Scenarios (--scenario happy|persist|fallback|large|cache|judge|all, gated by CONTEXT_LENS_E2E=1):
+// Scenarios (--scenario happy|persist|fallback|large|cache|judge|all, gated by PARADOC_E2E=1):
 //   happy    condensed excerpts + confidence, interception < 5s (R001, R003, R005)
 //   persist  two separate `opencode run` processes (= two plugin instances) with a
 //            pre-seeded project config; both must resolve modelSource "project" and the
@@ -11,11 +11,11 @@
 //            so persistence is proven via a pre-seeded project config across fresh
 //            instances; picker-save persistence is covered by the S02/S04 hermetic tests.
 //   fallback a nonexistent subagent model; the read must return the full file and a
-//            context-lens warn `fallback <reason> for <path>` must be logged (R004).
+//            paradoc warn `fallback <reason> for <path>` must be logged (R004).
 //   large    a 3000-line fixture with chunk fan-out enabled through the v2 env stopgap.
 //   cache    one run that reads the fixture twice; the second `intercepted` log must carry
 //            cacheHit=true and a tiny elapsed time (in-memory result cache, one process).
-//   judge    CONTEXT_LENS_JUDGE=always; the log must carry judge=<verdict>, or the read must
+//   judge    PARADOC_JUDGE=always; the log must carry judge=<verdict>, or the read must
 //            fall back with judge-rejected. A judge error is non-fatal (warn, excerpts kept).
 import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -98,13 +98,13 @@ function assertion(condition, message) {
 function hostDiagnostics(transcript) {
   return transcript.split("\n")
     .filter((line) => !/watcher (started|subscribe|stopped)/i.test(line))
-    .filter((line) => /context-lens|plugin|error|session|tool|read/i.test(line))
+    .filter((line) => /paradoc|plugin|error|session|tool|read/i.test(line))
     .slice(-80)
     .join("\n");
 }
 
 function headerFor(totalLines) {
-  return new RegExp(`\\[context-lens\\].*showing (\\d+) of ${totalLines} lines`);
+  return new RegExp(`\\[paradoc\\].*showing (\\d+) of ${totalLines} lines`);
 }
 
 function parseEvents(stdout) {
@@ -124,11 +124,11 @@ function readOutputs(stdout) {
     .map((p) => String(p.state.output ?? ""));
 }
 
-/** Parses `[context-lens] <level>: <message> {extra-json}` lines printed by the plugin. */
+/** Parses `[paradoc] <level>: <message> {extra-json}` lines printed by the plugin. */
 function pluginLogs(transcript) {
   const logs = [];
   for (const line of transcript.split("\n")) {
-    const m = line.match(/^\[context-lens\] (\w+): (.*?)(?: (\{.*\}))?$/);
+    const m = line.match(/^\[paradoc\] (\w+): (.*?)(?: (\{.*\}))?$/);
     if (!m) continue;
     let extra;
     try { extra = m[3] ? JSON.parse(m[3]) : undefined; } catch { /* keep message only */ }
@@ -139,16 +139,16 @@ function pluginLogs(transcript) {
 
 async function setupProject(temp, configHome, modelConfig, fixture) {
   const fixturePath = join(temp, "fixture.ts");
-  await mkdir(join(temp, ".context-lens"), { recursive: true });
+  await mkdir(join(temp, ".paradoc"), { recursive: true });
   await mkdir(join(temp, ".opencode", "plugins"), { recursive: true });
   await writeFile(fixturePath, fixture, "utf8");
-  await writeFile(join(temp, ".context-lens", "config.json"), JSON.stringify({ version: 1, model: modelConfig }) + "\n");
+  await writeFile(join(temp, ".paradoc", "config.json"), JSON.stringify({ version: 1, model: modelConfig }) + "\n");
   // v2 auto-discovers project shims and invokes their default export. Keep the
   // plugin module's single named export intact for the package API.
-  const pluginShim = join(temp, ".opencode", "plugins", "context-lens.js");
+  const pluginShim = join(temp, ".opencode", "plugins", "paradoc.js");
   await writeFile(
     pluginShim,
-    `export { ContextLensV2Plugin as default } from ${JSON.stringify(pathToFileURL(pluginModule).href)};\n`,
+    `export { ParaDocV2Plugin as default } from ${JSON.stringify(pathToFileURL(pluginModule).href)};\n`,
   );
   // v2's project scan is optional in standalone mode, so register the same shim
   // explicitly through the singular plugin array as well.
@@ -174,14 +174,14 @@ async function opencodeRun(ctx, temp, configHome, fixturePath, symbol = E2E_FIXT
 function checkCondensed(r, totalLines = E2E_FIXTURE_LINES, maxElapsedMs = 5000) {
   const header = headerFor(totalLines);
   const condensed = r.reads.find((o) => header.test(o));
-  assertion(condensed, `missing condensed context-lens tool output:\n${hostDiagnostics(r.transcript)}`);
+  assertion(condensed, `missing condensed paradoc tool output:\n${hostDiagnostics(r.transcript)}`);
   const confidence = condensed.match(/Confidence:\s*(\d)\/5/);
   assertion(confidence, "missing confidence N/5 in tool output");
   assertion(/--- lines \d+-\d+/.test(condensed), "missing numbered excerpt range in tool output");
   const linesReturned = Number(condensed.match(header)[1]);
   assertion(linesReturned > 0 && linesReturned < totalLines, "tool output was not shorter than fixture");
   const log = r.logs.find((l) => l.level === "info" && /^intercepted /.test(l.message));
-  assertion(log, "missing context-lens intercepted log");
+  assertion(log, "missing paradoc intercepted log");
   const elapsedMs = Number(log.message.match(/(\d+)ms\)$/)?.[1]);
   assertion(Number.isFinite(elapsedMs), "interception log did not end with elapsed milliseconds");
   assertion(elapsedMs < maxElapsedMs, `interception exceeded ${maxElapsedMs}ms: ${elapsedMs}ms`);
@@ -197,7 +197,7 @@ async function scenarioHappy(ctx, temp, configHome) {
 
 async function scenarioPersist(ctx, temp, configHome) {
   const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
-  const configPath = join(temp, ".context-lens", "config.json");
+  const configPath = join(temp, ".paradoc", "config.json");
   const before = await readFile(configPath);
   const runs = [];
   for (let i = 0; i < 2; i++) {
@@ -206,8 +206,8 @@ async function scenarioPersist(ctx, temp, configHome) {
     runs.push(r);
   }
   assertion((await readFile(configPath)).equals(before), "project config changed during persist runs");
-  const stray = (await readdir(configHome, { recursive: true })).filter((f) => /context-lens/i.test(f));
-  assertion(stray.length === 0, `global context-lens config appeared under isolated config home: ${stray}`);
+  const stray = (await readdir(configHome, { recursive: true })).filter((f) => /paradoc/i.test(f));
+  assertion(stray.length === 0, `global paradoc config appeared under isolated config home: ${stray}`);
   return {
     scenario: "persist", ok: true, modelSources: runs.map((r) => r.modelSource),
     elapsedMs: Math.max(...runs.map((r) => r.elapsedMs)), confidence: runs[1].confidence,
@@ -216,7 +216,7 @@ async function scenarioPersist(ctx, temp, configHome) {
 }
 
 async function scenarioFallback(ctx, temp, configHome) {
-  const bad = { providerID: "openai", modelID: "context-lens-does-not-exist" };
+  const bad = { providerID: "openai", modelID: "paradoc-does-not-exist" };
   const fixturePath = await setupProject(temp, configHome, bad, ctx.fixture);
   const r = await opencodeRun(ctx, temp, configHome, fixturePath);
   assertion(!r.reads.some((o) => headerFor(E2E_FIXTURE_LINES).test(o)), "fallback read unexpectedly condensed");
@@ -240,7 +240,7 @@ async function scenarioLarge(ctx, temp, configHome) {
       configHome,
       fixturePath,
       E2E_LARGE_FIXTURE_SYMBOL,
-      { CONTEXT_LENS_CHUNK_LINES: "1000", CONTEXT_LENS_CONCURRENCY: String(concurrency) },
+      { PARADOC_CHUNK_LINES: "1000", PARADOC_CONCURRENCY: String(concurrency) },
     );
     const condensed = raw.reads.find((output) => headerFor(E2E_LARGE_FIXTURE_LINES).test(output));
     assertion(condensed?.includes(`export function ${E2E_LARGE_FIXTURE_SYMBOL}`), "condensed output omitted fan-out symbol lines");
@@ -278,7 +278,7 @@ async function scenarioCache(ctx, temp, configHome) {
 
 async function scenarioJudge(ctx, temp, configHome) {
   const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
-  const r = await opencodeRun(ctx, temp, configHome, fixturePath, E2E_FIXTURE_SYMBOL, { CONTEXT_LENS_JUDGE: "always" });
+  const r = await opencodeRun(ctx, temp, configHome, fixturePath, E2E_FIXTURE_SYMBOL, { PARADOC_JUDGE: "always" });
   const rejected = r.logs.find((l) => l.level === "warn" && /^fallback judge-rejected for /.test(l.message));
   if (rejected) {
     assertion(r.reads.some((o) => o.includes("fixtureValue400()")), `judge-rejected read did not return the full file:\n${hostDiagnostics(r.transcript)}`);
@@ -294,11 +294,11 @@ async function scenarioJudge(ctx, temp, configHome) {
     }
     return { scenario: "judge", ok: true, judge: verdict };
   }
-  throw new Error(`no judge verdict in context-lens logs:\n${hostDiagnostics(r.transcript)}`);
+  throw new Error(`no judge verdict in paradoc logs:\n${hostDiagnostics(r.transcript)}`);
 }
 
 async function main() {
-  if (process.env.CONTEXT_LENS_E2E !== "1") skip("set CONTEXT_LENS_E2E=1");
+  if (process.env.PARADOC_E2E !== "1") skip("set PARADOC_E2E=1");
   if (!await exists(pluginModule) || !await exists(fixtureModule)) {
     throw new Error("run npm run build");
   }
@@ -327,14 +327,14 @@ async function main() {
   const results = [];
   let failure;
   for (const name of names) {
-    const temp = await mkdtemp(join(tmpdir(), "context-lens-e2e-"));
+    const temp = await mkdtemp(join(tmpdir(), "paradoc-e2e-"));
     try {
       // The free subagent model occasionally returns non-JSON (fallback invalid-response);
       // the plugin degrades correctly, but the live assertion needs one retry on a fresh project.
       let result, attempts = 0;
       for (;;) {
         attempts++;
-        const attemptTemp = attempts === 1 ? temp : await mkdtemp(join(tmpdir(), "context-lens-e2e-"));
+        const attemptTemp = attempts === 1 ? temp : await mkdtemp(join(tmpdir(), "paradoc-e2e-"));
         try {
           result = await scenarios[name](ctx, attemptTemp, join(attemptTemp, "xdg-config"));
           break;

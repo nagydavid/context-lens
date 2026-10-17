@@ -50,10 +50,10 @@ function warn(options: ConfigOptions, message: string): void {
 
 export function configPath(scope: ConfigScope, options: ConfigOptions = {}): string {
   const { projectRoot, homeDir, env } = resolvedOptions(options);
-  if (scope === "project") return join(projectRoot, ".context-lens", "config.json");
+  if (scope === "project") return join(projectRoot, ".paradoc", "config.json");
 
   const configHome = env.XDG_CONFIG_HOME || join(homeDir, ".config");
-  return join(configHome, "context-lens", "config.json");
+  return join(configHome, "paradoc", "config.json");
 }
 
 export function validateModelChoice(value: unknown): ModelChoice | undefined {
@@ -95,7 +95,7 @@ function loadFile(path: string, source: ConfigScope, options: ConfigOptions): St
     raw = readFileSync(path, "utf8");
   } catch (error: unknown) {
     if (isMissingFile(error)) return undefined;
-    warn(options, `context-lens: ignoring ${path}: ${errorMessage(error)}`);
+    warn(options, `paradoc: ignoring ${path}: ${errorMessage(error)}`);
     return undefined;
   }
 
@@ -103,18 +103,18 @@ function loadFile(path: string, source: ConfigScope, options: ConfigOptions): St
   try {
     parsed = JSON.parse(raw);
   } catch {
-    warn(options, `context-lens: ignoring ${path}: invalid JSON`);
+    warn(options, `paradoc: ignoring ${path}: invalid JSON`);
     return undefined;
   }
 
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    warn(options, `context-lens: ignoring ${path}: invalid config`);
+    warn(options, `paradoc: ignoring ${path}: invalid config`);
     return undefined;
   }
 
   const config = parsed as Record<string, unknown>;
   if (config.version !== 1) {
-    warn(options, `context-lens: ignoring ${path}: unsupported version`);
+    warn(options, `paradoc: ignoring ${path}: unsupported version`);
     return undefined;
   }
 
@@ -122,7 +122,7 @@ function loadFile(path: string, source: ConfigScope, options: ConfigOptions): St
 
   const choice = validateModelChoice(config.model);
   if (!choice) {
-    warn(options, `context-lens: ignoring ${path}: invalid model`);
+    warn(options, `paradoc: ignoring ${path}: invalid model`);
     return undefined;
   }
 
@@ -160,23 +160,23 @@ export function readConfigObject(
   try {
     raw = readFileSync(path, "utf8");
   } catch (error: unknown) {
-    if (!isMissingFile(error)) warn(options, `context-lens: ignoring ${path}: ${errorMessage(error)}`);
+    if (!isMissingFile(error)) warn(options, `paradoc: ignoring ${path}: ${errorMessage(error)}`);
     return undefined;
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    warn(options, `context-lens: ignoring ${path}: invalid JSON`);
+    warn(options, `paradoc: ignoring ${path}: invalid JSON`);
     return undefined;
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    warn(options, `context-lens: ignoring ${path}: invalid config`);
+    warn(options, `paradoc: ignoring ${path}: invalid config`);
     return undefined;
   }
   const config = parsed as Record<string, unknown>;
   if (config.version !== 1) {
-    warn(options, `context-lens: ignoring ${path}: unsupported version`);
+    warn(options, `paradoc: ignoring ${path}: unsupported version`);
     return undefined;
   }
   return config;
@@ -185,11 +185,11 @@ export function readConfigObject(
 export function loadModelConfig(options: ConfigOptions = {}): StoredModel | undefined {
   try {
     const env = resolvedOptions(options).env;
-    const modelSpec = env.CONTEXT_LENS_MODEL;
+    const modelSpec = env.PARADOC_MODEL;
     if (modelSpec !== undefined) {
       const choice = parseModelSpec(modelSpec);
       if (choice) return { choice, source: "env" };
-      warn(options, "context-lens: ignoring CONTEXT_LENS_MODEL: invalid model spec");
+      warn(options, "paradoc: ignoring PARADOC_MODEL: invalid model spec");
     }
 
     return (
@@ -197,7 +197,7 @@ export function loadModelConfig(options: ConfigOptions = {}): StoredModel | unde
       loadFile(configPath("global", options), "global", options)
     );
   } catch (error: unknown) {
-    warn(options, `context-lens: could not load model config: ${errorMessage(error)}`);
+    warn(options, `paradoc: could not load model config: ${errorMessage(error)}`);
     return undefined;
   }
 }

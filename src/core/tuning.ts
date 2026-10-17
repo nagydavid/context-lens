@@ -41,13 +41,13 @@ const MIN: Record<Exclude<Key, "judge">, number> = {
 };
 
 const ENV_NAMES: Record<Key, string> = {
-  thresholdLines: "CONTEXT_LENS_THRESHOLD",
-  timeoutMs: "CONTEXT_LENS_TIMEOUT_MS",
-  concurrency: "CONTEXT_LENS_CONCURRENCY",
-  chunkLines: "CONTEXT_LENS_CHUNK_LINES",
-  chunkOverlapLines: "CONTEXT_LENS_CHUNK_OVERLAP",
-  judge: "CONTEXT_LENS_JUDGE",
-  cacheMaxEntries: "CONTEXT_LENS_CACHE",
+  thresholdLines: "PARADOC_THRESHOLD",
+  timeoutMs: "PARADOC_TIMEOUT_MS",
+  concurrency: "PARADOC_CONCURRENCY",
+  chunkLines: "PARADOC_CHUNK_LINES",
+  chunkOverlapLines: "PARADOC_CHUNK_OVERLAP",
+  judge: "PARADOC_JUDGE",
+  cacheMaxEntries: "PARADOC_CACHE",
 };
 
 type Check = { ok: true; value: number | JudgeMode } | { ok: false; reason: string };
@@ -88,7 +88,7 @@ function readTuningBlock(
   if (!config || config.tuning === undefined) return undefined;
   const block = config.tuning;
   if (typeof block !== "object" || block === null || Array.isArray(block)) {
-    safeWarn(options, `context-lens: ignoring ${path}: invalid tuning`);
+    safeWarn(options, `paradoc: ignoring ${path}: invalid tuning`);
     return undefined;
   }
   return { path, block: block as Record<string, unknown> };
@@ -128,7 +128,7 @@ export function loadTuning(options: TuningOptions = {}): {
           break;
         }
         const origin = source === "explicit" || source === "env" ? label : `${label} tuning.${key}`;
-        safeWarn(options, `context-lens: ignoring ${origin}: ${result.reason}`);
+        safeWarn(options, `paradoc: ignoring ${origin}: ${result.reason}`);
       }
     }
 
@@ -139,7 +139,7 @@ export function loadTuning(options: TuningOptions = {}): {
       } else if (settings.chunkOverlapLines >= settings.chunkLines) {
         safeWarn(
           options,
-          `context-lens: ignoring ${sources.chunkOverlapLines} chunkOverlapLines: must be smaller than chunkLines`,
+          `paradoc: ignoring ${sources.chunkOverlapLines} chunkOverlapLines: must be smaller than chunkLines`,
         );
         settings.chunkOverlapLines = derived;
         sources.chunkOverlapLines = "default";
@@ -149,7 +149,7 @@ export function loadTuning(options: TuningOptions = {}): {
   } catch (error: unknown) {
     safeWarn(
       options,
-      `context-lens: could not load tuning: ${error instanceof Error ? error.message : String(error)}`,
+      `paradoc: could not load tuning: ${error instanceof Error ? error.message : String(error)}`,
     );
     return defaults();
   }

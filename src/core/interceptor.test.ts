@@ -10,7 +10,7 @@ import type { InterceptionEvent } from "./interceptor.js";
 import { configPath } from "./config.js";
 import { ModelSelector } from "./model-selector.js";
 
-const fixturePath = (name: string) => join(tmpdir(), `context-lens-${name}-${Date.now()}.txt`);
+const fixturePath = (name: string) => join(tmpdir(), `paradoc-${name}-${Date.now()}.txt`);
 const largeContent = Array.from({ length: 400 }, (_, index) =>
   index + 1 >= 120 && index + 1 <= 130
     ? `function recognisable_${index + 1}() {}`
@@ -187,8 +187,8 @@ describe("ReadInterceptor", () => {
 async function withModelDirs(
   run: (projectRoot: string, homeDir: string) => Promise<void>,
 ): Promise<void> {
-  const projectRoot = mkdtempSync(join(tmpdir(), "context-lens-project-"));
-  const homeDir = mkdtempSync(join(tmpdir(), "context-lens-home-"));
+  const projectRoot = mkdtempSync(join(tmpdir(), "paradoc-project-"));
+  const homeDir = mkdtempSync(join(tmpdir(), "paradoc-home-"));
   try {
     await run(projectRoot, homeDir);
   } finally {
@@ -601,7 +601,7 @@ describe("token floor, cache and stats", () => {
   it("counts bypasses and read failures separately", async () => {
     const interceptor = new ReadInterceptor({ runner: new FakeSubagentRunner({ structured: answer }) });
     interceptor.noteBypass();
-    await interceptor.intercept({ filePath: "/nonexistent/context-lens.txt", ...ask });
+    await interceptor.intercept({ filePath: "/nonexistent/paradoc.txt", ...ask });
     const s = interceptor.stats();
     strictEqual(s.bypassed, 1);
     strictEqual(s.fallbacks, 1);

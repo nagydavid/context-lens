@@ -1,11 +1,26 @@
 {
-  "name": "context-lens",
+  "name": "@nagydavid/paradoc",
   "version": "0.1.0",
   "description": "Cheap-model read interceptor for coding agents (Spotify Portal pattern)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "context-lens-mcp": "dist/copilot-cli/mcp-entry.js"
+    "paradoc": "dist/cli/main.js",
+    "paradoc-mcp": "dist/copilot-cli/mcp-entry.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.map",
+    "!dist/**/e2e-fixture.*",
+    "!dist/**/probe-fixture.*"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nagydavid/paradoc.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "exports": {
     ".": {
@@ -31,6 +46,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "tsc",
     "test": "node --test dist/**/*.test.js",
     "type-check": "tsc --noEmit",
     "dev": "tsc --watch",

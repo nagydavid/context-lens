@@ -16,7 +16,7 @@ const fixtures: string[] = [];
 const choice = { providerID: "openrouter", modelID: "anthropic/cheap", endpoint: "https://models.test" };
 
 function fixture(): Fixture {
-  const root = mkdtempSync(join(tmpdir(), "context-lens-selector-"));
+  const root = mkdtempSync(join(tmpdir(), "paradoc-selector-"));
   fixtures.push(root);
   return { projectRoot: join(root, "project"), homeDir: join(root, "home") };
 }
@@ -121,7 +121,7 @@ describe("ModelSelector", () => {
   });
 
   it("uses a picked model when saving fails and reports a warning", async () => {
-    const root = mkdtempSync(join(tmpdir(), "context-lens-selector-file-"));
+    const root = mkdtempSync(join(tmpdir(), "paradoc-selector-file-"));
     fixtures.push(root);
     const warnings: string[] = [];
     const picker = new CountingPicker(async () => ({ choice, scope: "project" }));

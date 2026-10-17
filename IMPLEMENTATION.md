@@ -1,4 +1,4 @@
-# ContextLens Implementation Plan
+# ParaDoc Implementation Plan
 
 ## Overview
 

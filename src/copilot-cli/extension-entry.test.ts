@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
 import { buildE2eFixture, buildViewInput } from "./probe-fixture.js";
-import { buildExtensionShim, defaultEntryUrl, registerContextLens } from "./extension-entry.js";
+import { buildExtensionShim, defaultEntryUrl, registerParaDoc } from "./extension-entry.js";
 import type { JoinSession } from "./types.js";
 
 const answer = {
@@ -17,7 +17,7 @@ const answer = {
 let tmp: string;
 let fixturePath: string;
 before(() => {
-  tmp = mkdtempSync(join(process.cwd(), "context-lens-extension-entry-"));
+  tmp = mkdtempSync(join(process.cwd(), "paradoc-extension-entry-"));
   fixturePath = join(tmp, "fixture.ts");
   writeFileSync(fixturePath, buildE2eFixture());
 });
@@ -31,7 +31,7 @@ describe("Copilot extension entry", () => {
       captured = config;
       return { log: (message) => logs.push(message) };
     };
-    const { hooks } = await registerContextLens(fakeJoin, {
+    const { hooks } = await registerParaDoc(fakeJoin, {
       runner: new FakeSubagentRunner({ structured: answer }),
       env: {},
       configOptions: { homeDir: tmp, env: {}, projectRoot: tmp },
@@ -46,7 +46,7 @@ describe("Copilot extension entry", () => {
       workingDirectory: tmp,
       text: "original native view",
     }));
-    ok(result?.modifiedResult?.textResultForLlm.includes("[context-lens]"));
+    ok(result?.modifiedResult?.textResultForLlm.includes("[paradoc]"));
     ok(result?.modifiedResult?.textResultForLlm.includes("Confidence:"));
     ok(logs.some((line) => line.includes("intercepted")));
   });
@@ -69,7 +69,7 @@ describe("Copilot extension entry", () => {
       }));
       writeFileSync(join(packageDirectory, "extension.js"), [
         "export async function joinSession(config) {",
-        "  globalThis.contextLensShimHooks = config.hooks;",
+        "  globalThis.paraDocShimHooks = config.hooks;",
         "  return { log() {} };",
         "}",
         "",
@@ -78,13 +78,13 @@ describe("Copilot extension entry", () => {
       writeFileSync(shimPath, buildExtensionShim(defaultEntryUrl()));
       await import(`${pathToFileURL(shimPath).href}?test=${Date.now()}`);
       const registered = (globalThis as typeof globalThis & {
-        contextLensShimHooks?: Record<string, unknown>;
-      }).contextLensShimHooks;
+        paraDocShimHooks?: Record<string, unknown>;
+      }).paraDocShimHooks;
       ok(registered);
       strictEqual(typeof registered.onPostToolUse, "function");
       strictEqual(typeof registered.onUserPromptSubmitted, "function");
     } finally {
-      delete (globalThis as typeof globalThis & { contextLensShimHooks?: unknown }).contextLensShimHooks;
+      delete (globalThis as typeof globalThis & { paraDocShimHooks?: unknown }).paraDocShimHooks;
       rmSync(shimDirectory, { recursive: true, force: true });
     }
   });

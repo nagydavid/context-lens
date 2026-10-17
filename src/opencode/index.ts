@@ -1,4 +1,4 @@
-// OpenCode plugin adapter for ContextLens
+// OpenCode plugin adapter for ParaDoc
 // Integrates with OpenCode's native plugin API
 
 import { interceptRead } from "../core/index.js";
@@ -55,7 +55,7 @@ export {
 export {
   createOpenCodeModelPicker,
 } from "./model-picker.js";
-export { createContextLensHooks } from "./hooks.js";
+export { createParaDocHooks } from "./hooks.js";
 export { renderInterceptionResult } from "./render.js";
 export {
   SessionSubagentRunner,
@@ -74,10 +74,10 @@ export type {
   StoredModel,
 } from "../core/index.js";
 export type {
-  ContextLensClient,
-  ContextLensHooks,
-  ContextLensHooksOptions,
-  ContextLensLogLevel,
+  ParaDocClient,
+  ParaDocHooks,
+  ParaDocHooksOptions,
+  ParaDocLogLevel,
 } from "./hooks.js";
 export type {
   OpenCodeModelPickerOptions,

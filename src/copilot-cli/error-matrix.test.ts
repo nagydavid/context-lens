@@ -111,7 +111,7 @@ function hooksFor(
 }
 
 function writeConfig(dir: string, body: string, global = false): void {
-  const configDir = global ? join(dir, ".config", "context-lens") : join(dir, ".context-lens");
+  const configDir = global ? join(dir, ".config", "paradoc") : join(dir, ".paradoc");
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, "config.json"), body);
 }
@@ -206,7 +206,7 @@ describe("copilot error matrix", () => {
     const cases = [
       { name: "invalid-json", config: "not json", env: {} },
       { name: "bad-version", config: JSON.stringify({ version: 2, model: { providerID: "github", modelID: "ignored" } }), env: {} },
-      { name: "bad-env", config: undefined, env: { CONTEXT_LENS_MODEL: "garbage" } },
+      { name: "bad-env", config: undefined, env: { PARADOC_MODEL: "garbage" } },
     ];
     for (const item of cases) {
       const { dir, path } = project("bad-config-" + item.name);
@@ -220,7 +220,7 @@ describe("copilot error matrix", () => {
 
   it("#11 resolves model configuration env before project before global", async () => {
     const cases = [
-      { name: "env", env: { CONTEXT_LENS_MODEL: "github/env-model" }, projectModel: "project-model", globalModel: "global-model", expected: "env-model", source: "env" },
+      { name: "env", env: { PARADOC_MODEL: "github/env-model" }, projectModel: "project-model", globalModel: "global-model", expected: "env-model", source: "env" },
       { name: "project", env: {}, projectModel: "project-model", globalModel: "global-model", expected: "project-model", source: "project" },
       { name: "global", env: {}, projectModel: undefined, globalModel: "global-model", expected: "global-model", source: "global" },
       { name: "none", env: {}, projectModel: undefined, globalModel: undefined, expected: undefined, source: "none" },

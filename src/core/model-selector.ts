@@ -67,7 +67,7 @@ export class ModelSelector {
       try {
         picked = await picker.pick();
       } catch (error: unknown) {
-        this.warn(`context-lens: could not pick model: ${errorMessage(error)}`);
+        this.warn(`paradoc: could not pick model: ${errorMessage(error)}`);
         return undefined;
       }
 
@@ -78,7 +78,7 @@ export class ModelSelector {
 
       const choice = validateModelChoice(picked.choice);
       if (!choice) {
-        this.warn("context-lens: ignoring invalid model choice from picker");
+        this.warn("paradoc: ignoring invalid model choice from picker");
         this.declined = true;
         return undefined;
       }
@@ -86,13 +86,13 @@ export class ModelSelector {
       try {
         saveModelConfig(choice, picked.scope, this.options);
       } catch (error: unknown) {
-        this.warn(`context-lens: could not save model config: ${errorMessage(error)}`);
+        this.warn(`paradoc: could not save model config: ${errorMessage(error)}`);
       }
 
       this.cached = { choice, source: "picker" };
       return this.cached;
     } catch (error: unknown) {
-      this.warn(`context-lens: could not resolve model: ${errorMessage(error)}`);
+      this.warn(`paradoc: could not resolve model: ${errorMessage(error)}`);
       return undefined;
     }
   }

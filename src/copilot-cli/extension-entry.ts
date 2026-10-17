@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { createCopilotHooks, type CopilotHooksOptions } from "./hooks.js";
 import type { JoinSession } from "./types.js";
 
-export async function registerContextLens(
+export async function registerParaDoc(
   joinSession: JoinSession,
   options: CopilotHooksOptions = {},
 ) {
@@ -16,7 +16,7 @@ export async function registerContextLens(
   });
   hooks.setSession(session);
   try {
-    const pending = session.log?.("[context-lens] info: Copilot CLI hooks registered");
+    const pending = session.log?.("[paradoc] info: Copilot CLI hooks registered");
     void Promise.resolve(pending).catch(() => undefined);
   } catch {
     // Host logging is best-effort and must not prevent registration.
@@ -35,8 +35,8 @@ export function buildExtensionShim(entryUrl: string): string {
   }
   return [
     'import { joinSession } from "@github/copilot-sdk/extension";',
-    `import { registerContextLens } from ${JSON.stringify(url.href)};`,
-    "await registerContextLens(joinSession);",
+    `import { registerParaDoc } from ${JSON.stringify(url.href)};`,
+    "await registerParaDoc(joinSession);",
     "",
   ].join("\n");
 }

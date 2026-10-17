@@ -24,7 +24,7 @@ function base(overrides: Partial<InterceptionResult> = {}): InterceptionResult {
 
 test("renders excerpts, confidence, summary and hint", () => {
   const out = renderInterceptionResult(base());
-  assert.ok(out.includes("[context-lens] /repo/big.ts: showing 5 of 400 lines (99% context saved)"));
+  assert.ok(out.includes("[paradoc] /repo/big.ts: showing 5 of 400 lines (99% context saved)"));
   assert.ok(out.includes("Question (explicit): what?"));
   assert.ok(out.includes("lines 10-12"));
   assert.ok(out.includes("lines 200-201"));
@@ -48,7 +48,7 @@ test("omits confidence and empty summary", () => {
 
 test("displayPath overrides filePath", () => {
   const out = renderInterceptionResult(base(), { displayPath: "src/big.ts" });
-  assert.ok(out.includes("[context-lens] src/big.ts:"));
+  assert.ok(out.includes("[paradoc] src/big.ts:"));
   assert.ok(!out.includes("/repo/big.ts"));
 });
 

@@ -1,7 +1,7 @@
 import type { FileExcerpt, InterceptionResult } from "../core/index.js";
 
 export const HINT =
-  "Note: this read was condensed by context-lens. Re-read with an explicit offset and limit to see exact or full content; ranged reads are never condensed.";
+  "Note: this read was condensed by paradoc. Re-read with an explicit offset and limit to see exact or full content; ranged reads are never condensed.";
 
 function renderExcerpt(excerpt: FileExcerpt): string[] {
   const header = `--- lines ${excerpt.startLine}-${excerpt.endLine}${excerpt.reason ? ` — ${excerpt.reason}` : ""}`;
@@ -30,7 +30,7 @@ export function renderInterceptionResult(
   options?: { displayPath?: string; hint?: string },
 ): string {
   const out: string[] = [
-    `[context-lens] ${options?.displayPath ?? result.filePath}: showing ${result.totalLinesReturned} of ${result.fullLineCount} lines (${Math.round(result.contextSaved)}% context saved)`,
+    `[paradoc] ${options?.displayPath ?? result.filePath}: showing ${result.totalLinesReturned} of ${result.fullLineCount} lines (${Math.round(result.contextSaved)}% context saved)`,
     `Question (${result.questionSource ?? "inferred"}): ${result.question ?? "(none)"}`,
   ];
   if (result.confidence !== undefined) out.push(`Confidence: ${result.confidence}/5`);
