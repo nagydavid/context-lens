@@ -23,6 +23,7 @@ export {
 } from "./parse.js";
 export type { ExcerptRange, ParseOutcome } from "./parse.js";
 export {
+  ConcurrencyLimitedRunner,
   SerialRunner,
   SUBAGENT_ANSWER_SCHEMA,
 } from "./subagent.js";

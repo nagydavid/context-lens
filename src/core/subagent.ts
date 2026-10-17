@@ -40,18 +40,45 @@ export const SUBAGENT_ANSWER_SCHEMA: Record<string, unknown> = {
   },
 };
 
+export class ConcurrencyLimitedRunner implements SubagentRunner {
+  readonly limit: number;
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(private readonly runner: SubagentRunner, limit: number) {
+    this.limit = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
+  }
+
+  async run(request: SubagentRequest): Promise<SubagentResult> {
+    await this.acquire();
+    try {
+      return await Promise.resolve().then(() => this.runner.run(request));
+    } finally {
+      this.release();
+    }
+  }
+
+  private acquire(): Promise<void> {
+    if (this.active < this.limit) {
+      this.active += 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => this.waiters.push(resolve));
+  }
+
+  private release(): void {
+    const next = this.waiters.shift();
+    if (next) {
+      next();
+    } else {
+      this.active -= 1;
+    }
+  }
+}
+
 /** Serializes calls to a runner without allowing a failed call to poison later work. */
-export class SerialRunner implements SubagentRunner {
-  private tail: Promise<void> = Promise.resolve();
-
-  constructor(private readonly runner: SubagentRunner) {}
-
-  run(request: SubagentRequest): Promise<SubagentResult> {
-    const call = this.tail.then(() => this.runner.run(request));
-    this.tail = call.then(
-      () => undefined,
-      () => undefined
-    );
-    return call;
+export class SerialRunner extends ConcurrencyLimitedRunner {
+  constructor(runner: SubagentRunner) {
+    super(runner, 1);
   }
 }
