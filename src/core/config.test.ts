@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { deepStrictEqual, strictEqual, throws } from "node:assert";
 import { after, describe, it } from "node:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -165,3 +166,59 @@ describe("model config", () => {
 function saveDirectory(filePath: string): void {
   mkdirSync(dirname(filePath), { recursive: true });
 }
+
+describe("model config with tuning block", () => {
+  function writeRaw(paths: Fixture, scope: "project" | "global", content: string): string {
+    const path = configPath(scope, options(paths));
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
+    return path;
+  }
+
+  it("treats a tuning-only file as silent and falls through to global", () => {
+    const paths = fixture();
+    writeRaw(paths, "project", JSON.stringify({ version: 1, tuning: { thresholdLines: 10 } }));
+    saveModelConfig({ providerID: "g", modelID: "m" }, "global", options(paths));
+    const warnings: string[] = [];
+    const stored = loadModelConfig({ ...options(paths), onWarning: (w) => warnings.push(w) });
+    strictEqual(stored?.source, "global");
+    deepStrictEqual(warnings, []);
+  });
+
+  it("still warns for a present invalid model", () => {
+    const paths = fixture();
+    writeRaw(paths, "project", JSON.stringify({ version: 1, model: { providerID: 1 } }));
+    const warnings: string[] = [];
+    strictEqual(loadModelConfig({ ...options(paths), onWarning: (w) => warnings.push(w) }), undefined);
+    strictEqual(warnings.length, 1);
+    strictEqual(warnings[0].includes("invalid model"), true);
+  });
+
+  for (const scope of ["project", "global"] as const) {
+    it(`preserves tuning across saves in ${scope} scope`, () => {
+      const paths = fixture();
+      const path = writeRaw(paths, scope, JSON.stringify({ version: 1, tuning: { concurrency: 3 }, extra: true }));
+      saveModelConfig({ providerID: "a", modelID: "b" }, scope, options(paths));
+      saveModelConfig({ providerID: "c", modelID: "d" }, scope, options(paths));
+      const saved = JSON.parse(readFileSync(path, "utf8"));
+      deepStrictEqual(saved, {
+        version: 1,
+        tuning: { concurrency: 3 },
+        extra: true,
+        model: { providerID: "c", modelID: "d" },
+      });
+      deepStrictEqual(readdirSync(dirname(path)), ["config.json"]);
+    });
+  }
+
+  it("replaces a corrupt existing file", () => {
+    const paths = fixture();
+    const path = writeRaw(paths, "project", "{broken");
+    saveModelConfig({ providerID: "a", modelID: "b" }, "project", options(paths));
+    deepStrictEqual(JSON.parse(readFileSync(path, "utf8")), {
+      version: 1,
+      model: { providerID: "a", modelID: "b" },
+    });
+    deepStrictEqual(readdirSync(dirname(path)), ["config.json"]);
+  });
+});

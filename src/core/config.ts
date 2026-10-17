@@ -118,6 +118,8 @@ function loadFile(path: string, source: ConfigScope, options: ConfigOptions): St
     return undefined;
   }
 
+  if (!("model" in config) || config.model === undefined) return undefined;
+
   const choice = validateModelChoice(config.model);
   if (!choice) {
     warn(options, `context-lens: ignoring ${path}: invalid model`);
@@ -133,6 +135,51 @@ function isMissingFile(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function readExistingObject(path: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const { version: _version, model: _model, ...rest } = parsed as Record<string, unknown>;
+    return rest;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Reads a config file with the shared rules (missing, invalid JSON, non-object,
+ * version !== 1). Returns undefined after warning for anything but a valid object.
+ */
+export function readConfigObject(
+  path: string,
+  options: ConfigOptions,
+): Record<string, unknown> | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error: unknown) {
+    if (!isMissingFile(error)) warn(options, `context-lens: ignoring ${path}: ${errorMessage(error)}`);
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    warn(options, `context-lens: ignoring ${path}: invalid JSON`);
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    warn(options, `context-lens: ignoring ${path}: invalid config`);
+    return undefined;
+  }
+  const config = parsed as Record<string, unknown>;
+  if (config.version !== 1) {
+    warn(options, `context-lens: ignoring ${path}: unsupported version`);
+    return undefined;
+  }
+  return config;
 }
 
 export function loadModelConfig(options: ConfigOptions = {}): StoredModel | undefined {
@@ -165,13 +212,14 @@ export function saveModelConfig(
 
   const path = configPath(scope, options);
   const directory = dirname(path);
+  const preserved = readExistingObject(path);
   const temporaryPath = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
 
   try {
     mkdirSync(directory, { recursive: true });
     writeFileSync(
       temporaryPath,
-      `${JSON.stringify({ version: 1, model: validated }, null, 2)}\n`,
+      `${JSON.stringify({ ...preserved, version: 1, model: validated }, null, 2)}\n`,
       "utf8",
     );
     renameSync(temporaryPath, path);

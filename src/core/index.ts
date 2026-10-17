@@ -54,6 +54,7 @@ export {
   configPath,
   loadModelConfig,
   parseModelSpec,
+  readConfigObject,
   saveModelConfig,
   validateModelChoice,
 } from "./config.js";
@@ -72,3 +73,5 @@ export type {
   ResolvedModel,
   ResolvedModelSource,
 } from "./model-selector.js";
+export { DEFAULT_TUNING, loadTuning, tuningToInterceptorOptions } from "./tuning.js";
+export type { TuningOptions, TuningSettings, TuningSource } from "./tuning.js";
