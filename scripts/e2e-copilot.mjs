@@ -71,6 +71,10 @@ async function allLogText(logDir) {
   return chunks.join("\n");
 }
 
+function interceptedRecords(records) {
+  return records.filter((record) => typeof record?.message === "string" && record.message.startsWith("intercepted "));
+}
+
 function findViewResult(logText) {
   const candidates = logText.match(/[\s\S]{0,600}\[context-lens\][\s\S]{0,3000}/g) ?? [];
   return candidates.find((candidate) => /Confidence:/.test(candidate) && !/fixtureValue400/.test(candidate));
@@ -102,6 +106,7 @@ async function runScenario({
   extraFiles = {},
   extraArgs = [],
   extraEnv = {},
+  fixture: buildFixture = (mod) => mod.buildE2eFixture(),
   check,
 }) {
   const temp = await mkdtemp(join(tmpdir(), "context-lens-copilot-e2e-"));
@@ -113,7 +118,7 @@ async function runScenario({
   try {
     await mkdir(logDir, { recursive: true });
     const fixture = await import(pathToFileURL(fixtureModule).href);
-    await writeFile(join(temp, "big.ts"), fixture.buildE2eFixture(), "utf8");
+    await writeFile(join(temp, "big.ts"), buildFixture(fixture), "utf8");
     await Promise.all(Object.entries(extraFiles).map(([file, content]) =>
       writeFile(join(temp, file), content, "utf8"),
     ));
@@ -166,16 +171,29 @@ async function runScenario({
 }
 
 // One retry per scenario absorbs model flakiness (L005); a second failure is real.
+// The large scenario additionally falls back to concurrency=1 when a chunk subagent fails,
+// mirroring the opencode harness, and reports concurrencyPinned.
 async function runScenarioWithRetry(scenario) {
   try {
     return await runScenario(scenario);
   } catch (error) {
+    if (scenario.pinOnChunkError && error.chunkError) {
+      console.warn(`RETRY ${scenario.name} with CONTEXT_LENS_CONCURRENCY=1: ${error.message}${error.paths ? `\n${error.paths}` : ""}`);
+      const pinned = await runScenario({ ...scenario, extraEnv: { ...scenario.extraEnv, CONTEXT_LENS_CONCURRENCY: "1" } });
+      return { ...pinned, concurrencyPinned: true };
+    }
     console.warn(`RETRY ${scenario.name}: ${error.message}${error.paths ? `\n${error.paths}` : ""}`);
     return runScenario(scenario);
   }
 }
 
+function parseScenarioFilter(argv) {
+  const index = argv.indexOf("--scenario");
+  return index === -1 ? "all" : argv[index + 1] ?? "all";
+}
+
 async function main() {
+  const scenarioFilter = parseScenarioFilter(process.argv.slice(2));
   if (process.env.CONTEXT_LENS_E2E !== "1") {
     console.log("SKIP copilot e2e (set CONTEXT_LENS_E2E=1)");
     return;
@@ -186,6 +204,8 @@ async function main() {
   if (version.code !== 0) throw new Error(`copilot --version failed: ${version.stderr.trim()}`);
   if (!version.stdout.includes(expectedVersion)) console.warn(`WARN expected copilot ${expectedVersion}, got ${version.stdout.trim()}`);
 
+  const fixtureMod = await import(pathToFileURL(fixtureModule).href);
+  const largeSymbol = fixtureMod.E2E_LARGE_FIXTURE_SYMBOL;
   const scenarios = [
     {
       name: "happy",
@@ -260,12 +280,63 @@ async function main() {
         assert(records.some((record) => record?.level === "warn" && record?.fallbackReason && record?.message?.startsWith("fallback")), "fallback warn record missing from context-lens JSONL log");
       },
     },
+    {
+      name: "large",
+      fixture: (mod) => mod.buildLargeE2eFixture(),
+      prompt: `Use the view tool to view big.ts in full (no view_range) and then report what ${largeSymbol} returns.`,
+      extraEnv: { CONTEXT_LENS_CHUNK_LINES: "1000", CONTEXT_LENS_CONCURRENCY: "3" },
+      pinOnChunkError: true,
+      check: async ({ result, logs, records, logSource, transcriptPath }) => {
+        assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
+        const chunkFailure = records.find((record) => /chunk \d+\/\d+/.test(record?.message ?? "") || record?.fallbackReason === "subagent-error");
+        const chunkCounts = interceptedRecords(records).map((record) => Number(/chunks=(\d+)/.exec(record.message)?.[1] ?? 0));
+        if (!chunkCounts.some((n) => n >= 2) && chunkFailure) {
+          const error = new Error(`chunk subagent error: ${chunkFailure.message}`);
+          error.chunkError = true;
+          throw error;
+        }
+        assert(chunkCounts.some((n) => n >= 2), `expected an intercepted record with chunks>=2, got [${chunkCounts.join(",")}] (${logSource})`);
+        assert(findViewResult(logs), "condensed view result with Confidence missing, or fixtureValue400 leaked; see debug logs");
+      },
+    },
+    {
+      name: "cache-repeat",
+      prompt: "Use the view tool to view big.ts in full (no view_range). Then use the view tool to view big.ts in full again. Then report what computeLensChecksum returns.",
+      check: async ({ result, records, logSource, transcriptPath }) => {
+        assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
+        const intercepted = interceptedRecords(records);
+        assert(intercepted.length >= 2, `expected at least 2 intercepted records, got ${intercepted.length} (${logSource})`);
+        assert(!/cacheHit=true/.test(intercepted[0].message), "first intercepted record unexpectedly has cacheHit=true");
+        const hit = intercepted.slice(1).find((record) => /cacheHit=true/.test(record.message));
+        assert(hit, "no later intercepted record has cacheHit=true");
+        const elapsed = Number.isFinite(hit.elapsedMs) ? hit.elapsedMs : Number(/(\d+)ms\)/.exec(hit.message)?.[1]);
+        assert(Number.isFinite(elapsed) && elapsed < 50, `cached record elapsed ${elapsed}ms, expected < 50ms`);
+      },
+    },
+    {
+      name: "judge",
+      extraEnv: { CONTEXT_LENS_JUDGE: "always" },
+      check: async ({ result, transcript, logs, records, logSource, transcriptPath }) => {
+        assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
+        const intercepted = interceptedRecords(records);
+        // Adapter wording: `intercepted <path> (..., judge=<verdict|error>, Nms) judge error: <detail>` at warn level.
+        if (intercepted.some((record) => /judge=\w+/.test(record.message))) return;
+        const rejected = records.some((record) => record?.fallbackReason === "judge-rejected" || /^fallback judge-rejected /.test(record?.message ?? ""));
+        if (rejected) {
+          assert(`${transcript}\n${logs}`.includes("fixtureValue400"), "judge-rejected but full file marker fixtureValue400 missing from output");
+          return;
+        }
+        assert(false, `no judge= token or judge-rejected fallback in ${records.length} records (${logSource})`);
+      },
+    },
   ];
 
-  for (const scenario of scenarios) {
+  const names = scenarios.map((scenario) => scenario.name);
+  assert(scenarioFilter === "all" || names.includes(scenarioFilter), `unknown scenario "${scenarioFilter}"; valid: ${names.join(", ")}, all`);
+  for (const scenario of scenarios.filter((entry) => scenarioFilter === "all" || entry.name === scenarioFilter)) {
     try {
-      const { paths, logSource } = await runScenarioWithRetry(scenario);
-      console.log(`PASS ${scenario.name}\n${paths}\nlog-source=${logSource}`);
+      const { paths, logSource, concurrencyPinned } = await runScenarioWithRetry(scenario);
+      console.log(`PASS ${scenario.name}\n${paths}\nlog-source=${logSource}${concurrencyPinned ? "\nconcurrencyPinned=true" : ""}`);
     } catch (error) {
       console.error(`FAIL ${scenario.name}: ${error.message}${error.paths ? `\n${error.paths}` : ""}`);
       process.exitCode = 1;

@@ -5,7 +5,7 @@ import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
 import { JUDGE_SCHEMA } from "../core/judge.js";
 import { createCopilotHooks } from "./hooks.js";
-import { buildE2eFixture, buildViewInput, E2E_FIXTURE_SYMBOL } from "./probe-fixture.js";
+import { buildE2eFixture, buildLargeE2eFixture, buildViewInput, E2E_FIXTURE_SYMBOL, E2E_LARGE_FIXTURE_LINES, E2E_LARGE_FIXTURE_SYMBOL } from "./probe-fixture.js";
 
 const answer = {
   excerpts: [{ startLine: 232, endLine: 238, reason: "checksum implementation" }],
@@ -46,6 +46,12 @@ function view(path: string, overrides: Partial<Parameters<typeof buildViewInput>
 }
 
 describe("createCopilotHooks", () => {
+  it("re-exports the large e2e fixture used by the live harness", () => {
+    const large = buildLargeE2eFixture();
+    strictEqual(large.split("\n").length, E2E_LARGE_FIXTURE_LINES);
+    ok(large.includes(`export function ${E2E_LARGE_FIXTURE_SYMBOL}`));
+  });
+
   it("(a) condenses a large native view and preserves result metadata", async () => {
     const { hooks, logs } = setup();
     const input = view(largePath);

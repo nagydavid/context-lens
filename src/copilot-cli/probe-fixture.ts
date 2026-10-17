@@ -1,6 +1,15 @@
 import type { PostToolUseHookInput } from "./types.js";
 
-export { buildE2eFixture, E2E_FIXTURE_LINES, E2E_FIXTURE_SYMBOL, E2E_FIXTURE_SYMBOL_RANGE } from "../opencode/e2e-fixture.js";
+export {
+  buildE2eFixture,
+  buildLargeE2eFixture,
+  E2E_FIXTURE_LINES,
+  E2E_FIXTURE_SYMBOL,
+  E2E_FIXTURE_SYMBOL_RANGE,
+  E2E_LARGE_FIXTURE_LINES,
+  E2E_LARGE_FIXTURE_SYMBOL,
+  E2E_LARGE_FIXTURE_SYMBOL_RANGE,
+} from "../opencode/e2e-fixture.js";
 
 export interface BuildViewInputOptions {
   path: string;
