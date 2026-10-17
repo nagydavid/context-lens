@@ -1,22 +1,22 @@
 import { resolve } from "path";
+import { planChunks } from "./chunking.js";
+import { NetworkError, runChunkedRead, TimeoutError } from "./fanout.js";
 import { readTextFile, statFile } from "./file-guard.js";
-import type {
-  FallbackReason,
-  InterceptionResult,
-  ReadRequest,
-} from "./models.js";
+import type { FallbackReason, InterceptionResult, ReadRequest } from "./models.js";
 import { normalizeRanges, parseSubagentResult, sliceExcerpts } from "./parse.js";
 import { buildSubagentPrompt } from "./prompts.js";
 import { resolveQuestion } from "./question.js";
 import { SUBAGENT_ANSWER_SCHEMA } from "./subagent.js";
 import { isTransientError } from "./transient.js";
 import type { ResolvedModel, ResolvedModelSource } from "./model-selector.js";
-import type { SubagentRunner } from "./subagent.js";
+import type { SubagentResult, SubagentRunner } from "./subagent.js";
 
 const DEFAULT_THRESHOLD_LINES = 350;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 100;
+
+type Model = { providerID: string; modelID: string } | undefined;
 
 export interface InterceptionEvent {
   filePath: string;
@@ -30,6 +30,7 @@ export interface InterceptionEvent {
   detail?: string;
   fileBytes?: number;
   attempts?: number;
+  chunks?: number;
 }
 
 export interface InterceptOptions {
@@ -39,23 +40,11 @@ export interface InterceptOptions {
   runner?: SubagentRunner;
   thresholdLines?: number;
   timeoutMs?: number;
-  model?: { providerID: string; modelID: string };
+  chunkLines?: number;
+  chunkOverlapLines?: number;
+  model?: Model;
   modelResolver?: () => Promise<ResolvedModel | undefined>;
   logger?: (event: InterceptionEvent) => void;
-}
-
-class TimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    super(`Subagent timed out after ${timeoutMs}ms.`);
-    this.name = "TimeoutError";
-  }
-}
-
-class NetworkError extends Error {
-  constructor(readonly retries: number, cause: unknown) {
-    super(`network error after ${retries} retries: ${errorMessage(cause)}`);
-    this.name = "NetworkError";
-  }
 }
 
 function errorMessage(error: unknown): string {
@@ -72,11 +61,7 @@ export class ReadInterceptor {
   async intercept(request: ReadRequest): Promise<InterceptionResult> {
     const { filePath, agentContext, projectRoot } = request;
     let lineCount = 0;
-    let event: InterceptionEvent = {
-      filePath,
-      lineCount,
-      intercepted: false,
-    };
+    let event: InterceptionEvent = { filePath, lineCount, intercepted: false };
     let modelResolved = false;
     let modelSource: "explicit" | ResolvedModelSource | "none" = "none";
     let modelResolutionDetail: string | undefined;
@@ -86,76 +71,34 @@ export class ReadInterceptor {
       const stat = statFile(resolvedPath, this.options.maxFileBytes);
       const read = stat.ok ? readTextFile(resolvedPath) : stat;
       if (!read.ok) {
-        event = {
-          filePath,
-          lineCount: 0,
-          intercepted: false,
-          fallbackReason: read.reason,
-          detail: read.detail,
-          ...(read.size !== undefined ? { fileBytes: read.size } : {}),
-        };
-        return {
-          filePath,
-          fullLineCount: 0,
-          wasIntercepted: false,
-          excerpts: [],
-          summary: "",
-          totalLinesReturned: 0,
-          contextSaved: 0,
-          error: read.error,
-          fallback: { reason: read.reason, detail: read.detail },
-        };
+        event = { filePath, lineCount: 0, intercepted: false, fallbackReason: read.reason, detail: read.detail, ...(read.size !== undefined ? { fileBytes: read.size } : {}) };
+        return { filePath, fullLineCount: 0, wasIntercepted: false, excerpts: [], summary: "", totalLinesReturned: 0, contextSaved: 0, error: read.error, fallback: { reason: read.reason, detail: read.detail } };
       }
       const fileContent = read.content;
       const lines = fileContent.split("\n");
       lineCount = lines.length;
-      const thresholdLines = this.options.thresholdLines ?? DEFAULT_THRESHOLD_LINES;
+      const fullFileResult = (reason?: FallbackReason, detail?: string, metadata: Partial<InterceptionResult> = {}): InterceptionResult => ({
+        filePath, fullLineCount: lineCount, wasIntercepted: false,
+        excerpts: [{ startLine: 1, endLine: lineCount, content: fileContent }],
+        summary: "", totalLinesReturned: lineCount, contextSaved: 0,
+        ...(reason ? { fallback: { reason, ...(detail ? { detail } : {}) } } : {}), ...metadata,
+      });
 
+      if (lineCount <= (this.options.thresholdLines ?? DEFAULT_THRESHOLD_LINES)) {
+        event = { filePath, lineCount, intercepted: false };
+        return fullFileResult();
+      }
       // S03 decides whether requested ranges alter interception semantics.
       void request.startLine;
       void request.endLine;
-
-      const fullFileResult = (
-        reason?: FallbackReason,
-        detail?: string,
-        metadata: Partial<InterceptionResult> = {}
-      ): InterceptionResult => ({
-        filePath,
-        fullLineCount: lineCount,
-        wasIntercepted: false,
-        excerpts: [{ startLine: 1, endLine: lineCount, content: fileContent }],
-        summary: "",
-        totalLinesReturned: lineCount,
-        contextSaved: 0,
-        ...(reason ? { fallback: { reason, ...(detail ? { detail } : {}) } } : {}),
-        ...metadata,
-      });
-
-      if (lineCount <= thresholdLines) {
-        const result = fullFileResult();
-        event = { filePath, lineCount, intercepted: false };
-        return result;
-      }
-
       const resolvedQuestion = resolveQuestion(request.question, agentContext);
-      const commonMetadata = {
-        question: resolvedQuestion.question,
-        questionSource: resolvedQuestion.source,
-      } as const;
-
+      const commonMetadata = { question: resolvedQuestion.question, questionSource: resolvedQuestion.source } as const;
       if (!this.options.runner) {
-        const result = fullFileResult("no-runner", undefined, commonMetadata);
-        event = {
-          filePath,
-          lineCount,
-          intercepted: false,
-          questionSource: resolvedQuestion.source,
-          fallbackReason: "no-runner",
-        };
-        return result;
+        event = { filePath, lineCount, intercepted: false, questionSource: resolvedQuestion.source, fallbackReason: "no-runner" };
+        return fullFileResult("no-runner", undefined, commonMetadata);
       }
 
-      let model: { providerID: string; modelID: string } | undefined;
+      let model: Model;
       if (this.options.model) {
         model = this.options.model;
         modelSource = "explicit";
@@ -163,213 +106,130 @@ export class ReadInterceptor {
         try {
           const resolvedModel = await this.options.modelResolver();
           if (resolvedModel) {
-            model = {
-              providerID: resolvedModel.choice.providerID,
-              modelID: resolvedModel.choice.modelID,
-            };
+            model = { providerID: resolvedModel.choice.providerID, modelID: resolvedModel.choice.modelID };
             modelSource = resolvedModel.source;
           }
-        } catch (error: unknown) {
+        } catch (error) {
           modelResolutionDetail = `model resolution failed: ${errorMessage(error)}`;
         }
       }
       modelResolved = true;
-
-      const prompt = buildSubagentPrompt({
-        filePath,
-        fileContent,
-        question: resolvedQuestion.question,
-        questionSource: resolvedQuestion.source,
-        agentContext,
-      });
-      const startedAt = performance.now();
-      let elapsedMs: number;
-      const attemptState = { attempts: 0 };
-      const attemptsField = () =>
-        attemptState.attempts > 1 ? { attempts: attemptState.attempts } : {};
-
-      try {
-        const response = await this.runWithTimeout(prompt, model, attemptState);
-        elapsedMs = performance.now() - startedAt;
-        const parsed = parseSubagentResult(response);
-        if (!parsed.ok) {
-          const result = fullFileResult(parsed.reason, parsed.detail, {
-            ...commonMetadata,
-            elapsedMs,
-          });
-          event = {
-            filePath,
-            lineCount,
-            intercepted: false,
-            elapsedMs,
-            questionSource: resolvedQuestion.source,
-            fallbackReason: parsed.reason,
-            modelSource,
-          ...attemptsField(),
-            detail: modelResolutionDetail ?? parsed.detail,
-          };
-          return result;
-        }
-
-        const ranges = normalizeRanges(parsed.answer.excerpts, lineCount);
-        if (ranges.length === 0) {
-          const result = fullFileResult("no-valid-excerpts", undefined, {
-            ...commonMetadata,
-            elapsedMs,
-          });
-          event = {
-            filePath,
-            lineCount,
-            intercepted: false,
-            elapsedMs,
-            questionSource: resolvedQuestion.source,
-            fallbackReason: "no-valid-excerpts",
-            modelSource,
-          ...attemptsField(),
-            ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}),
-          };
-          return result;
-        }
-
-        const excerpts = sliceExcerpts(lines, ranges);
-        const totalLinesReturned = excerpts.reduce(
-          (sum, excerpt) => sum + excerpt.endLine - excerpt.startLine + 1,
-          0
-        );
-        const result: InterceptionResult = {
-          filePath,
-          fullLineCount: lineCount,
-          wasIntercepted: true,
-          excerpts,
-          summary: parsed.answer.summary,
-          confidence: parsed.answer.confidence,
-          ...commonMetadata,
-          elapsedMs,
-          totalLinesReturned,
-          contextSaved: Math.round(
-            ((lineCount - totalLinesReturned) / lineCount) * 100
-          ),
-        };
-        event = {
-          filePath,
-          lineCount,
-          intercepted: true,
-          elapsedMs,
-          confidence: parsed.answer.confidence,
-          questionSource: resolvedQuestion.source,
-          modelSource,
-          ...attemptsField(),
-          ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}),
-        };
-        return result;
-      } catch (error) {
-        elapsedMs = performance.now() - startedAt;
-        const isTimeout = error instanceof TimeoutError;
-        const reason: FallbackReason = isTimeout
-          ? "timeout"
-          : error instanceof NetworkError
-            ? "network-error"
-            : "subagent-error";
-        const detail = error instanceof Error ? error.message : String(error);
-        const result = fullFileResult(reason, detail, {
-          ...commonMetadata,
-          elapsedMs,
-        });
-        event = {
-          filePath,
-          lineCount,
-          intercepted: false,
-          elapsedMs,
-          questionSource: resolvedQuestion.source,
-          fallbackReason: reason,
-          modelSource,
-          ...attemptsField(),
-          detail: modelResolutionDetail ?? detail,
-        };
-        return result;
+      const timeoutMs = this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const windows = planChunks(lineCount, { chunkLines: this.options.chunkLines ?? 0, overlapLines: this.options.chunkOverlapLines ?? 0 });
+      const chunked = Number.isFinite(this.options.chunkLines) && Number.isInteger(this.options.chunkLines) && this.options.chunkLines! >= 1 && windows.length > 1;
+      if (chunked) {
+        return await this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent: (next) => { event = next; } });
       }
+      return await this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent: (next) => { event = next; } });
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      event = {
-        filePath,
-        lineCount,
-        intercepted: false,
-        fallbackReason: "unreadable",
-        ...(modelResolved ? { modelSource } : {}),
-        detail: modelResolutionDetail ?? detail,
-      };
-      return {
-        filePath,
-        fullLineCount: lineCount,
-        wasIntercepted: false,
-        excerpts: [],
-        summary: "",
-        totalLinesReturned: 0,
-        contextSaved: 0,
-        error: detail,
-        fallback: { reason: "unreadable", detail },
-      };
+      const detail = errorMessage(error);
+      event = { filePath, lineCount, intercepted: false, fallbackReason: "unreadable", ...(modelResolved ? { modelSource } : {}), detail: modelResolutionDetail ?? detail };
+      return { filePath, fullLineCount: lineCount, wasIntercepted: false, excerpts: [], summary: "", totalLinesReturned: 0, contextSaved: 0, error: detail, fallback: { reason: "unreadable", detail } };
     } finally {
-      try {
-        this.options.logger?.(event);
-      } catch {
-        // Observability must not alter read behaviour.
-      }
+      try { this.options.logger?.(event); } catch { /* observability is non-fatal */ }
     }
   }
 
-  private resolvePath(filePath: string, projectRoot?: string): string {
-    return resolve(projectRoot || process.cwd(), filePath);
+  private async interceptChunks(args: InterceptArgs & { windows: ReturnType<typeof planChunks> }): Promise<InterceptionResult> {
+    const { filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, commonMetadata, fullFileResult, timeoutMs, setEvent } = args;
+    const startedAt = performance.now();
+    const deadline = Date.now() + timeoutMs;
+    const outcome = await runChunkedRead({
+      lines, windows,
+      buildPrompt: (window) => buildSubagentPrompt({ filePath, fileContent, question: resolvedQuestion.question, questionSource: resolvedQuestion.source, agentContext: args.agentContext, window }),
+      run: (prompt, state, isAborted) => this.runWithDeadline(prompt, model, state, deadline, timeoutMs, isAborted),
+    });
+    const elapsedMs = performance.now() - startedAt;
+    const attempts = outcome.attempts > 1 ? { attempts: outcome.attempts } : {};
+    if (!outcome.ok) {
+      const detail = modelResolutionDetail ? `${modelResolutionDetail}; ${outcome.detail}` : outcome.detail;
+      const result = fullFileResult(outcome.reason, outcome.detail, { ...commonMetadata, elapsedMs, ...attempts, chunks: windows.length });
+      setEvent({ filePath, lineCount: lines.length, intercepted: false, elapsedMs, questionSource: resolvedQuestion.source, fallbackReason: outcome.reason, modelSource, ...attempts, chunks: windows.length, detail });
+      return result;
+    }
+    const excerpts = sliceExcerpts(lines, outcome.merged.ranges);
+    const totalLinesReturned = countExcerptLines(excerpts);
+    const result: InterceptionResult = { filePath, fullLineCount: lines.length, wasIntercepted: true, excerpts, summary: outcome.merged.summary, confidence: outcome.merged.confidence, ...commonMetadata, elapsedMs, totalLinesReturned, contextSaved: contextSaved(lines.length, totalLinesReturned), ...attempts, chunks: windows.length };
+    setEvent({ filePath, lineCount: lines.length, intercepted: true, elapsedMs, confidence: outcome.merged.confidence, questionSource: resolvedQuestion.source, modelSource, ...attempts, chunks: windows.length, ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}) });
+    return result;
   }
 
-  private async runWithTimeout(
-    prompt: string,
-    model: { providerID: string; modelID: string } | undefined,
-    state: { attempts: number },
-  ) {
-    const timeoutMs = this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  private async interceptSingle(args: InterceptArgs): Promise<InterceptionResult> {
+    const { filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, commonMetadata, fullFileResult, timeoutMs, setEvent } = args;
+    const prompt = buildSubagentPrompt({ filePath, fileContent, question: resolvedQuestion.question, questionSource: resolvedQuestion.source, agentContext: args.agentContext });
+    const startedAt = performance.now();
+    const state = { attempts: 0 };
+    const attempts = () => state.attempts > 1 ? { attempts: state.attempts } : {};
+    try {
+      const response = await this.runWithDeadline(prompt, model, state, Date.now() + timeoutMs, timeoutMs);
+      const elapsedMs = performance.now() - startedAt;
+      const parsed = parseSubagentResult(response);
+      if (!parsed.ok) return this.singleFallback(parsed.reason, parsed.detail, args, elapsedMs, attempts());
+      const ranges = normalizeRanges(parsed.answer.excerpts, lines.length);
+      if (!ranges.length) return this.singleFallback("no-valid-excerpts", undefined, args, elapsedMs, attempts());
+      const excerpts = sliceExcerpts(lines, ranges);
+      const totalLinesReturned = countExcerptLines(excerpts);
+      const result: InterceptionResult = { filePath, fullLineCount: lines.length, wasIntercepted: true, excerpts, summary: parsed.answer.summary, confidence: parsed.answer.confidence, ...commonMetadata, elapsedMs, totalLinesReturned, contextSaved: contextSaved(lines.length, totalLinesReturned) };
+      setEvent({ filePath, lineCount: lines.length, intercepted: true, elapsedMs, confidence: parsed.answer.confidence, questionSource: resolvedQuestion.source, modelSource, ...attempts(), ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}) });
+      return result;
+    } catch (error) {
+      const reason: FallbackReason = error instanceof TimeoutError ? "timeout" : error instanceof NetworkError ? "network-error" : "subagent-error";
+      return this.singleFallback(reason, errorMessage(error), args, performance.now() - startedAt, attempts());
+    }
+  }
+
+  private singleFallback(reason: FallbackReason, detail: string | undefined, args: InterceptArgs, elapsedMs: number, attempts: { attempts?: number }): InterceptionResult {
+    const { filePath, lines, modelSource, modelResolutionDetail, resolvedQuestion, commonMetadata, fullFileResult, setEvent } = args;
+    const result = fullFileResult(reason, detail, { ...commonMetadata, elapsedMs });
+    setEvent({ filePath, lineCount: lines.length, intercepted: false, elapsedMs, questionSource: resolvedQuestion.source, fallbackReason: reason, modelSource, ...attempts, ...(modelResolutionDetail ? { detail: modelResolutionDetail } : detail ? { detail } : {}) });
+    return result;
+  }
+
+  private async runWithDeadline(prompt: string, model: Model, state: { attempts: number }, deadline: number, timeoutMs: number, isAborted = () => false): Promise<SubagentResult> {
     const maxRetries = Math.max(0, this.options.maxRetries ?? DEFAULT_MAX_RETRIES);
     const retryDelayMs = this.options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
-    const deadline = Date.now() + timeoutMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const loop = async () => {
       for (let attempt = 1; ; attempt++) {
+        if (Date.now() >= deadline || isAborted()) throw new TimeoutError(timeoutMs);
         state.attempts = attempt;
         try {
-          return await this.options.runner!.run({
-            prompt,
-            schema: SUBAGENT_ANSWER_SCHEMA,
-            timeoutMs: Math.max(1, deadline - Date.now()),
-            model,
-          });
+          return await this.options.runner!.run({ prompt, schema: SUBAGENT_ANSWER_SCHEMA, timeoutMs: Math.max(1, deadline - Date.now()), model });
         } catch (error) {
           if (!isTransientError(error)) throw error;
-          if (attempt > maxRetries) {
-            throw maxRetries > 0 ? new NetworkError(maxRetries, error) : error;
-          }
+          if (attempt > maxRetries) throw maxRetries > 0 ? new NetworkError(maxRetries, error) : error;
+          if (Date.now() >= deadline || isAborted()) throw new TimeoutError(timeoutMs);
           await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs * attempt));
         }
       }
     };
     const work = loop();
-    // An abandoned loop may settle after the timeout wins the race.
     work.catch(() => undefined);
     try {
-      return await Promise.race([
-        work,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new TimeoutError(timeoutMs)), timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+      return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new TimeoutError(timeoutMs)), Math.max(0, deadline - Date.now())); })]);
+    } finally { if (timer) clearTimeout(timer); }
   }
+
+  private resolvePath(filePath: string, projectRoot?: string): string { return resolve(projectRoot || process.cwd(), filePath); }
 }
 
-export async function interceptRead(
-  request: ReadRequest,
-  options?: InterceptOptions
-): Promise<InterceptionResult> {
-  return new ReadInterceptor(options).intercept(request);
+interface InterceptArgs {
+  filePath: string;
+  fileContent: string;
+  lines: string[];
+  model: Model;
+  modelSource: "explicit" | ResolvedModelSource | "none";
+  modelResolutionDetail?: string;
+  resolvedQuestion: ReturnType<typeof resolveQuestion>;
+  agentContext: ReadRequest["agentContext"];
+  commonMetadata: { question: string; questionSource: "explicit" | "inferred" };
+  fullFileResult: (reason?: FallbackReason, detail?: string, metadata?: Partial<InterceptionResult>) => InterceptionResult;
+  timeoutMs: number;
+  setEvent: (event: InterceptionEvent) => void;
 }
+
+function countExcerptLines(excerpts: InterceptionResult["excerpts"]): number { return excerpts.reduce((sum, excerpt) => sum + excerpt.endLine - excerpt.startLine + 1, 0); }
+function contextSaved(lineCount: number, returned: number): number { return Math.round(((lineCount - returned) / lineCount) * 100); }
+
+export { TimeoutError, NetworkError } from "./fanout.js";
+export async function interceptRead(request: ReadRequest, options?: InterceptOptions): Promise<InterceptionResult> { return new ReadInterceptor(options).intercept(request); }

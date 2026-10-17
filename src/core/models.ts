@@ -49,6 +49,8 @@ export interface InterceptionResult {
   question?: string;
   questionSource?: "explicit" | "inferred";
   elapsedMs?: number;
+  attempts?: number;
+  chunks?: number;
   fallback?: { reason: FallbackReason; detail?: string };
 }
 

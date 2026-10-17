@@ -24,6 +24,8 @@ export {
 export type { ExcerptRange, ParseOutcome } from "./parse.js";
 export { planChunks, mergeChunkAnswers } from "./chunking.js";
 export type { ChunkAnswer, ChunkWindow } from "./chunking.js";
+export { runChunkedRead, TimeoutError, NetworkError } from "./fanout.js";
+export type { ChunkedOutcome } from "./fanout.js";
 export {
   ConcurrencyLimitedRunner,
   SerialRunner,
