@@ -13,6 +13,18 @@ function renderExcerpt(excerpt: FileExcerpt): string[] {
   return ["", header, ...numbered];
 }
 
+/** Line ranges not shown, e.g. "1-11, 40-120"; excerpts are sorted and non-overlapping. */
+function omittedRanges(result: InterceptionResult): string {
+  const gaps: string[] = [];
+  let next = 1;
+  for (const { startLine, endLine } of result.excerpts) {
+    if (startLine > next) gaps.push(startLine - 1 === next ? `${next}` : `${next}-${startLine - 1}`);
+    next = endLine + 1;
+  }
+  if (next <= result.fullLineCount) gaps.push(next === result.fullLineCount ? `${next}` : `${next}-${result.fullLineCount}`);
+  return gaps.join(", ");
+}
+
 export function renderInterceptionResult(
   result: InterceptionResult,
   options?: { displayPath?: string; hint?: string },
@@ -24,6 +36,8 @@ export function renderInterceptionResult(
   if (result.confidence !== undefined) out.push(`Confidence: ${result.confidence}/5`);
   if (result.summary) out.push(`Summary: ${result.summary}`);
   for (const excerpt of result.excerpts) out.push(...renderExcerpt(excerpt));
+  const omitted = omittedRanges(result);
+  if (omitted) out.push("", `Omitted lines: ${omitted} (read these with an explicit range if needed)`);
   out.push("", options?.hint ?? HINT);
   return out.join("\n");
 }

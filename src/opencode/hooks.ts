@@ -165,7 +165,8 @@ export function createContextLensHooks(options: ContextLensHooksOptions): Contex
       log(
         eventLogLevel(event),
         describeEvent(event),
-        { ...event }
+        // Running totals (counts/ms measured, token figures estimated) ride along on each event.
+        { ...event, stats: interceptor.stats() }
       ),
   });
 
@@ -205,10 +206,14 @@ export function createContextLensHooks(options: ContextLensHooksOptions): Contex
         if (childSessions.has(input.sessionID)) return;
         const args = input.args;
         if (!isRecord(args)) return;
+        // Ranged reads are explicit requests for exact content; never condense them.
         // OpenCode 1.x exposed `filePath`; v2's native read tool sends `path`.
         const filePath = typeof args.filePath === "string" ? args.filePath : args.path;
         if (typeof filePath !== "string" || filePath === "") return;
-        if (args.offset !== undefined || args.limit !== undefined) return;
+        if (args.offset !== undefined || args.limit !== undefined) {
+          interceptor.noteBypass();
+          return;
+        }
 
         const result = await interceptor.intercept({
           filePath,

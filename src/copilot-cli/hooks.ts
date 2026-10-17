@@ -159,7 +159,7 @@ export function createCopilotHooks(
         logger: (event) => log(
           eventLogLevel(event),
           describeEvent(event),
-          { ...event },
+          { ...event, stats: interceptor!.stats() },
         ),
       });
       interceptors.set(workingDirectory, interceptor);
@@ -195,7 +195,10 @@ export function createCopilotHooks(
         const path = input.toolArgs.path;
         if (typeof path !== "string" || path.trim() === "") return undefined;
         if (input.toolResult?.resultType !== "success") return undefined;
-        if (hasRangeArgument(input.toolArgs)) return undefined;
+        if (hasRangeArgument(input.toolArgs)) {
+          interceptorFor(input.workingDirectory).noteBypass();
+          return undefined;
+        }
         if ((input.toolResult.toolTelemetry as { properties?: { viewType?: string } } | undefined)?.properties?.viewType === "directory") return undefined;
 
         const resolved = resolve(input.workingDirectory, path);

@@ -1,5 +1,5 @@
-export { ReadInterceptor, eventLogLevel, interceptRead } from "./interceptor.js";
-export type { InterceptOptions, InterceptionEvent } from "./interceptor.js";
+export { ReadInterceptor, eventLogLevel, interceptRead, estimateTokens } from "./interceptor.js";
+export type { InterceptOptions, InterceptionEvent, InterceptStats } from "./interceptor.js";
 export { LruResultCache, PROMPT_VERSION, sha256, cacheKey } from "./cache.js";
 export type { ResultCache, CacheKeyInput } from "./cache.js";
 export type {

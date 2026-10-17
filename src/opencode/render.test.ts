@@ -72,3 +72,8 @@ test("trailing newline does not add an empty numbered line", () => {
   assert.ok(out.includes("00006| q"));
   assert.ok(!out.includes("00007|"));
 });
+
+test("lists omitted line ranges between and around excerpts", () => {
+  const out = renderInterceptionResult(base());
+  assert.match(out, /Omitted lines: 1-9, 13-199, 202-400 /);
+});

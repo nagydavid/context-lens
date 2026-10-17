@@ -211,7 +211,7 @@ describe("SessionSubagentRunner", () => {
 
   it("forwards explicit questions through handleOpenCodeRead to a serialized runner", async () => {
     const filePath = join(tmpdir(), `context-lens-opencode-${Date.now()}.txt`);
-    const content = Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n");
+    const content = Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n") + "\n" + "z".repeat(4000);
     writeFileSync(filePath, content);
     const { client, promptBodies } = mockClient({
       data: {

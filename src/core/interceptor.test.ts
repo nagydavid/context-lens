@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSyn
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, it } from "node:test";
+import { LruResultCache } from "./cache.js";
 import { FakeSubagentRunner } from "./fake-runner.js";
 import { interceptRead, ReadInterceptor } from "./interceptor.js";
 import type { InterceptionEvent } from "./interceptor.js";
@@ -13,7 +14,7 @@ const fixturePath = (name: string) => join(tmpdir(), `context-lens-${name}-${Dat
 const largeContent = Array.from({ length: 400 }, (_, index) =>
   index + 1 >= 120 && index + 1 <= 130
     ? `function recognisable_${index + 1}() {}`
-    : `line ${index + 1}`
+    : `line ${index + 1}: ${"x".repeat(40)}` // realistic width: ~5k tokens, over the delegation floor
 ).join("\n");
 const answer = {
   excerpts: [{ startLine: 118, endLine: 132, reason: "relevant function" }],
@@ -157,7 +158,7 @@ describe("ReadInterceptor", () => {
     const content = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
     await withFixture("threshold", content, async (filePath) => {
       const runner = new FakeSubagentRunner({ structured: { ...answer, excerpts: [{ startLine: 1, endLine: 2 }] } });
-      const result = await interceptRead({ filePath, agentContext: {} }, { runner, thresholdLines: 10 });
+      const result = await interceptRead({ filePath, agentContext: {} }, { runner, thresholdLines: 10, minTokens: 0 });
       strictEqual(result.wasIntercepted, true);
       strictEqual(runner.calls.length, 1);
     });
@@ -459,5 +460,151 @@ describe("ReadInterceptor model selection", () => {
         ok(elapsed < 110, `elapsed ${elapsed}`);
       });
     });
+  });
+});
+
+describe("token floor, cache and stats", () => {
+  const ask = { agentContext: {}, question: "where?" };
+
+  it("skips delegation for cheap files past the line threshold and counts a passthrough", async () => {
+    const cheap = Array.from({ length: 400 }, (_, i) => `l${i}`).join("\n");
+    await withFixture("cheap", cheap, async (filePath) => {
+      const runner = new FakeSubagentRunner({ structured: answer });
+      const interceptor = new ReadInterceptor({ runner });
+      const result = await interceptor.intercept({ filePath, ...ask });
+      strictEqual(result.wasIntercepted, false);
+      strictEqual(runner.calls.length, 0);
+      strictEqual(interceptor.stats().passthrough, 1);
+    });
+  });
+
+  it("intercepts long-line files under the line threshold", async () => {
+    const wide = Array.from({ length: 20 }, () => "y".repeat(2000)).join("\n");
+    await withFixture("wide", wide, async (filePath) => {
+      const runner = new FakeSubagentRunner({ structured: { ...answer, excerpts: [{ startLine: 1, endLine: 2 }] } });
+      const result = await new ReadInterceptor({ runner }).intercept({ filePath, ...ask });
+      strictEqual(result.wasIntercepted, true);
+    });
+  });
+
+  it("serves an exact repeat from cache and invalidates on question, content and model change", async () => {
+    await withFixture("cache", largeContent, async (filePath) => {
+      const runner = new FakeSubagentRunner({ structured: answer });
+      let model = { providerID: "p", modelID: "a" };
+      const interceptor = new ReadInterceptor({ runner, cache: new LruResultCache(), modelResolver: async () => ({ choice: model, source: "env" as const }) });
+      await interceptor.intercept({ filePath, ...ask });
+      const hit = await interceptor.intercept({ filePath, ...ask });
+      strictEqual(runner.calls.length, 1);
+      strictEqual(hit.wasIntercepted, true);
+      await interceptor.intercept({ filePath, ...ask, question: "other?" });
+      strictEqual(runner.calls.length, 2);
+      model = { providerID: "p", modelID: "b" };
+      await interceptor.intercept({ filePath, ...ask });
+      strictEqual(runner.calls.length, 3);
+      writeFileSync(filePath, largeContent + "\nchanged");
+      await interceptor.intercept({ filePath, ...ask });
+      strictEqual(runner.calls.length, 4);
+      const s = interceptor.stats();
+      strictEqual(s.cacheHits, 1);
+      strictEqual(s.delegations, 4);
+      ok(s.estTokensSaved > 0 && s.estTokensDelegated > 0);
+    });
+  });
+
+  it("does not cache failures", async () => {
+    await withFixture("nocache-fail", largeContent, async (filePath) => {
+      let n = 0;
+      const runner = new FakeSubagentRunner(() => (++n === 1 ? { text: "garbage" } : { structured: answer }));
+      const interceptor = new ReadInterceptor({ runner, cache: new LruResultCache() });
+      strictEqual((await interceptor.intercept({ filePath, ...ask })).wasIntercepted, false);
+      strictEqual((await interceptor.intercept({ filePath, ...ask })).wasIntercepted, true);
+      strictEqual(interceptor.stats().fallbacks, 1);
+    });
+  });
+  it("honours both threshold boundaries", async () => {
+    const run = async (content: string, options = {}) => {
+      let calls = 0;
+      await withFixture("boundary", content, async (filePath) => {
+        const runner = new FakeSubagentRunner({ structured: { ...answer, excerpts: [{ startLine: 1, endLine: 2 }] } });
+        await new ReadInterceptor({ runner, ...options }).intercept({ filePath, ...ask });
+        calls = runner.calls.length;
+      });
+      return calls;
+    };
+    // 350 lines (no trailing newline) is not "> 350"; 351 is.
+    const rows = (n: number) => Array.from({ length: n }, () => "x".repeat(20)).join("\n");
+    strictEqual(await run(rows(350)), 0);
+    strictEqual(await run(rows(351)), 1);
+    // minTokens: 351 lines of 11 chars = 4212 chars -> 1053 tokens; just under/over a 1053 floor.
+    const small = Array.from({ length: 351 }, () => "y".repeat(11)).join("\n");
+    strictEqual(await run(small, { minTokens: 1053 }), 1);
+    strictEqual(await run(small, { minTokens: 1054 }), 0);
+    // thresholdTokens applies under the line threshold: 8000 tokens = 32000 chars.
+    strictEqual(await run("z".repeat(32_000)), 1);
+    strictEqual(await run("z".repeat(31_996)), 0);
+  });
+
+  it("evicts least-recently-used entries and runs every read without a cache", async () => {
+    await withFixture("lru", largeContent, async (filePath) => {
+      const runner = new FakeSubagentRunner({ structured: answer });
+      const interceptor = new ReadInterceptor({ runner, cache: new LruResultCache({ maxEntries: 2 }) });
+      const read = (question: string) => interceptor.intercept({ filePath, agentContext: {}, question });
+      await read("a"); await read("b"); await read("a"); // a is now most recent
+      await read("c"); // evicts b
+      strictEqual(runner.calls.length, 3);
+      await read("a"); strictEqual(runner.calls.length, 3);
+      await read("b"); strictEqual(runner.calls.length, 4);
+    });
+    await withFixture("nocache", largeContent, async (filePath) => {
+      const runner = new FakeSubagentRunner({ structured: answer });
+      const interceptor = new ReadInterceptor({ runner });
+      await interceptor.intercept({ filePath, ...ask });
+      await interceptor.intercept({ filePath, ...ask });
+      strictEqual(runner.calls.length, 2);
+      strictEqual(interceptor.stats().cacheHits, 0);
+    });
+  });
+
+  it("keys on the resolved question, not agent context, and keeps source references on a hit", async () => {
+    await withFixture("ctx", largeContent, async (filePath) => {
+      const runner = new FakeSubagentRunner({ structured: answer });
+      const interceptor = new ReadInterceptor({ runner, cache: new LruResultCache() });
+      const first = await interceptor.intercept({ filePath, question: "q", agentContext: { currentTask: "one" } });
+      const hit = await interceptor.intercept({ filePath, question: "q", agentContext: { currentTask: "two" } });
+      strictEqual(runner.calls.length, 1);
+      deepStrictEqual(hit.excerpts, first.excerpts);
+      strictEqual(hit.excerpts[0].startLine, 118);
+      ok(hit.excerpts[0].content.includes("recognisable_120"));
+    });
+  });
+
+  it("counts retries in delegated tokens and cache hits as zero delegation", async () => {
+    await withFixture("retry-stats", largeContent, async (filePath) => {
+      let n = 0;
+      const runner = new FakeSubagentRunner(() => {
+        if (++n === 1) throw Object.assign(new Error("fetch failed"), { code: "ECONNRESET" });
+        return { structured: answer };
+      });
+      const interceptor = new ReadInterceptor({ runner, retryDelayMs: 1, cache: new LruResultCache() });
+      await interceptor.intercept({ filePath, ...ask });
+      const once = interceptor.stats().estTokensDelegated;
+      strictEqual(runner.calls.length, 2);
+      await interceptor.intercept({ filePath, ...ask }); // cache hit
+      const s = interceptor.stats();
+      strictEqual(s.estTokensDelegated, once);
+      strictEqual(s.delegations, 1);
+      strictEqual(s.cacheHits, 1);
+      ok(once > 0 && once % 2 === 0, `two attempts of one prompt: ${once}`);
+    });
+  });
+
+  it("counts bypasses and read failures separately", async () => {
+    const interceptor = new ReadInterceptor({ runner: new FakeSubagentRunner({ structured: answer }) });
+    interceptor.noteBypass();
+    await interceptor.intercept({ filePath: "/nonexistent/context-lens.txt", ...ask });
+    const s = interceptor.stats();
+    strictEqual(s.bypassed, 1);
+    strictEqual(s.fallbacks, 1);
+    strictEqual(s.delegations, 0);
   });
 });

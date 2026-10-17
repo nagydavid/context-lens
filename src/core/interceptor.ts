@@ -17,8 +17,30 @@ const DEFAULT_THRESHOLD_LINES = 350;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 100;
+// Below this a delegation costs more than it saves, even past the line threshold.
+const DEFAULT_MIN_TOKENS = 1_000;
+// Long-line files (minified, generated) are intercepted on size even under the line threshold.
+const DEFAULT_THRESHOLD_TOKENS = 8_000;
 
 type Model = { providerID: string; modelID: string } | undefined;
+
+// ponytail: chars/4 is a lightweight estimate, not a tokenizer; swap one in only if the thresholds need precision.
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Counters for one interceptor. Token figures are estimates (chars/4); counts and ms are measured. */
+export interface InterceptStats {
+  intercepted: number;
+  passthrough: number;
+  bypassed: number;
+  fallbacks: number;
+  cacheHits: number;
+  delegations: number;
+  delegationMs: number;
+  estTokensSaved: number;
+  estTokensDelegated: number;
+}
 
 export interface InterceptionEvent {
   filePath: string;
@@ -35,6 +57,10 @@ export interface InterceptionEvent {
   chunks?: number;
   judge?: JudgeOutcome;
   cacheHit?: boolean;
+  /** Estimated tokens kept out of the primary model's context. */
+  estTokensSaved?: number;
+  /** Estimated tokens sent to the cheap model (absent on cache hits). */
+  estTokensDelegated?: number;
 }
 
 export function eventLogLevel(event: InterceptionEvent): "info" | "warn" | "debug" {
@@ -50,6 +76,10 @@ export interface InterceptOptions {
   retryDelayMs?: number;
   runner?: SubagentRunner;
   thresholdLines?: number;
+  /** Skip delegation under this estimated size even past thresholdLines. */
+  minTokens?: number;
+  /** Intercept at this estimated size even under thresholdLines. */
+  thresholdTokens?: number;
   timeoutMs?: number;
   chunkLines?: number;
   chunkOverlapLines?: number;
@@ -67,9 +97,37 @@ function errorMessage(error: unknown): string {
 export class ReadInterceptor {
   private readonly options: InterceptOptions;
   private readonly inflight = new Map<string, Promise<InterceptionResult>>();
+  private readonly counters: InterceptStats = {
+    intercepted: 0, passthrough: 0, bypassed: 0, fallbacks: 0, cacheHits: 0,
+    delegations: 0, delegationMs: 0, estTokensSaved: 0, estTokensDelegated: 0,
+  };
 
   constructor(options: InterceptOptions = {}) {
     this.options = options;
+  }
+
+  stats(): InterceptStats {
+    return { ...this.counters };
+  }
+
+  /** Harness adapters call this when they skip interception (ranged read, child session, ...). */
+  noteBypass(): void {
+    this.counters.bypassed++;
+  }
+
+  private record(event: InterceptionEvent): void {
+    const c = this.counters;
+    if (event.intercepted) {
+      c.intercepted++;
+      c.estTokensSaved += event.estTokensSaved ?? 0;
+    } else if (event.fallbackReason) c.fallbacks++;
+    else c.passthrough++;
+    if (event.cacheHit) c.cacheHits++;
+    else if (event.estTokensDelegated !== undefined) {
+      c.delegations++;
+      c.delegationMs += event.elapsedMs ?? 0;
+      c.estTokensDelegated += event.estTokensDelegated;
+    }
   }
 
   async intercept(request: ReadRequest): Promise<InterceptionResult> {
@@ -98,7 +156,11 @@ export class ReadInterceptor {
         ...(reason ? { fallback: { reason, ...(detail ? { detail } : {}) } } : {}), ...metadata,
       });
 
-      if (lineCount <= (this.options.thresholdLines ?? DEFAULT_THRESHOLD_LINES)) {
+      const fileTokens = estimateTokens(fileContent);
+      const eligible =
+        fileTokens >= (this.options.thresholdTokens ?? DEFAULT_THRESHOLD_TOKENS) ||
+        (lineCount > (this.options.thresholdLines ?? DEFAULT_THRESHOLD_LINES) && fileTokens >= (this.options.minTokens ?? DEFAULT_MIN_TOKENS));
+      if (!eligible) {
         event = { filePath, lineCount, intercepted: false };
         return fullFileResult();
       }
@@ -134,11 +196,14 @@ export class ReadInterceptor {
       const cache = this.options.cache;
       let key = "";
       const lookupStart = performance.now();
+      const savedTokens = (r: InterceptionResult) =>
+        Math.max(0, fileTokens - estimateTokens(r.excerpts.map((e) => e.content).join("\n") + r.summary));
       const serveShared = (hit: InterceptionResult): InterceptionResult => {
         const elapsedMs = performance.now() - lookupStart;
         const { attempts: _attempts, ...rest } = hit;
         event = {
           filePath, lineCount, intercepted: true, elapsedMs, confidence: hit.confidence, questionSource: resolvedQuestion.source, modelSource,
+          estTokensSaved: savedTokens(hit),
           ...(hit.chunks !== undefined ? { chunks: hit.chunks } : {}), ...(hit.judge ? { judge: hit.judge } : {}),
           ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}), cacheHit: true,
         };
@@ -164,9 +229,10 @@ export class ReadInterceptor {
         }
       }
       const setEvent = (next: InterceptionEvent) => { event = next; };
+      const usage = { tokens: 0 };
       const compute = (): Promise<InterceptionResult> => chunked
-        ? this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent })
-        : this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent });
+        ? this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent, usage })
+        : this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent, usage });
       let result: InterceptionResult;
       if (cache && key && !this.inflight.has(key)) {
         const pending = compute();
@@ -175,6 +241,11 @@ export class ReadInterceptor {
       } else {
         result = await compute();
       }
+      event = {
+        ...event,
+        ...(event.intercepted ? { estTokensSaved: savedTokens(result) } : {}),
+        ...(usage.tokens > 0 ? { estTokensDelegated: usage.tokens } : {}),
+      };
       if (cache && key && result.wasIntercepted && !result.judge?.error) {
         const { cacheHit: _c, elapsedMs: _e, attempts: _a, ...stripped } = result;
         try { cache.set(key, stripped); } catch { /* cache is best-effort */ }
@@ -185,6 +256,7 @@ export class ReadInterceptor {
       event = { filePath, lineCount, intercepted: false, fallbackReason: "unreadable", ...(modelResolved ? { modelSource } : {}), detail: modelResolutionDetail ?? detail };
       return { filePath, fullLineCount: lineCount, wasIntercepted: false, excerpts: [], summary: "", totalLinesReturned: 0, contextSaved: 0, error: detail, fallback: { reason: "unreadable", detail } };
     } finally {
+      this.record(event);
       try { this.options.logger?.(event); } catch { /* observability is non-fatal */ }
     }
   }
@@ -195,7 +267,11 @@ export class ReadInterceptor {
     const deadline = Date.now() + timeoutMs;
     const outcome = await runChunkedRead({
       lines, windows,
-      buildPrompt: (window) => buildSubagentPrompt({ filePath, fileContent, question: resolvedQuestion.question, questionSource: resolvedQuestion.source, agentContext: args.agentContext, window }),
+      buildPrompt: (window) => {
+        const prompt = buildSubagentPrompt({ filePath, fileContent, question: resolvedQuestion.question, questionSource: resolvedQuestion.source, agentContext: args.agentContext, window });
+        args.usage.tokens += estimateTokens(prompt); // ponytail: chunk retries not counted
+        return prompt;
+      },
       run: (prompt, state, isAborted) => this.runWithDeadline(prompt, model, state, deadline, timeoutMs, isAborted),
     });
     const elapsedMs = performance.now() - startedAt;
@@ -234,6 +310,9 @@ export class ReadInterceptor {
     } catch (error) {
       const reason: FallbackReason = error instanceof TimeoutError ? "timeout" : error instanceof NetworkError ? "network-error" : "subagent-error";
       return this.singleFallback(reason, errorMessage(error), args, performance.now() - startedAt, attempts());
+    } finally {
+      // Every attempt resends the complete prompt, so retries multiply the cheap-model input.
+      args.usage.tokens += estimateTokens(prompt) * Math.max(1, state.attempts);
     }
   }
 
@@ -333,6 +412,7 @@ interface InterceptArgs {
   fullFileResult: (reason?: FallbackReason, detail?: string, metadata?: Partial<InterceptionResult>) => InterceptionResult;
   timeoutMs: number;
   setEvent: (event: InterceptionEvent) => void;
+  usage: { tokens: number };
 }
 
 function countExcerptLines(excerpts: InterceptionResult["excerpts"]): number { return excerpts.reduce((sum, excerpt) => sum + excerpt.endLine - excerpt.startLine + 1, 0); }
