@@ -1,6 +1,6 @@
 import { deepStrictEqual, ok, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
-import { ContextLensV2Plugin, createV2Client } from "./plugin-v2.js";
+import { ContextLensV2Plugin, createV2Client, readFanoutEnv } from "./plugin-v2.js";
 import type { ContextLensV2Context } from "./plugin-v2.js";
 
 function makeCtx(overrides: Partial<ContextLensV2Context["session"]> = {}) {
@@ -48,6 +48,22 @@ describe("ContextLensV2Plugin (OpenCode v2.0.30 host contract)", () => {
     const { ctx, hooks } = makeCtx();
     ContextLensV2Plugin.setup(ctx);
     await hooks["session.prompt"]({ sessionID: "s", prompt: null });
+  });
+});
+
+describe("readFanoutEnv", () => {
+  it("reads positive chunk and concurrency values", () => {
+    deepStrictEqual(readFanoutEnv({ CONTEXT_LENS_CHUNK_LINES: "1000", CONTEXT_LENS_CONCURRENCY: "3" }), {
+      chunkLines: 1000,
+      concurrency: 3,
+    });
+  });
+
+  it("omits absent, garbage, zero, and negative values", () => {
+    deepStrictEqual(readFanoutEnv({}), {});
+    deepStrictEqual(readFanoutEnv({ CONTEXT_LENS_CHUNK_LINES: "", CONTEXT_LENS_CONCURRENCY: "" }), {});
+    deepStrictEqual(readFanoutEnv({ CONTEXT_LENS_CHUNK_LINES: "nope", CONTEXT_LENS_CONCURRENCY: "0" }), {});
+    deepStrictEqual(readFanoutEnv({ CONTEXT_LENS_CHUNK_LINES: "-1", CONTEXT_LENS_CONCURRENCY: "-3" }), {});
   });
 });
 

@@ -6,7 +6,11 @@ import { after, before, describe, it } from "node:test";
 import {
   E2E_FIXTURE_LINES,
   E2E_FIXTURE_SYMBOL_RANGE,
+  E2E_LARGE_FIXTURE_LINES,
+  E2E_LARGE_FIXTURE_SYMBOL,
+  E2E_LARGE_FIXTURE_SYMBOL_RANGE,
   buildE2eFixture,
+  buildLargeE2eFixture,
 } from "./e2e-fixture.js";
 import { ContextLensPlugin } from "./plugin.js";
 
@@ -193,5 +197,12 @@ describe("OpenCode host-contract e2e (compiled plugin entry)", () => {
     ok(output.output.startsWith("[context-lens]"));
     strictEqual(nested!.output, fixture);
     strictEqual(harness.calls.filter((c) => c === "create").length, 1);
+  });
+
+  it("(e) builds a 3000-line fixture with the fan-out symbol in the third chunk", () => {
+    const large = buildLargeE2eFixture().split("\n");
+    strictEqual(large.length, E2E_LARGE_FIXTURE_LINES);
+    strictEqual(large[E2E_LARGE_FIXTURE_SYMBOL_RANGE.startLine - 1], `export function ${E2E_LARGE_FIXTURE_SYMBOL}(input: string): string {`);
+    ok(large.slice(E2E_LARGE_FIXTURE_SYMBOL_RANGE.startLine - 1, E2E_LARGE_FIXTURE_SYMBOL_RANGE.endLine).join("\n").includes("C0NTEXT-LENS"));
   });
 });

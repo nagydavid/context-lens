@@ -49,6 +49,22 @@ function textOfContent(content: unknown): string {
     .join("\n");
 }
 
+function positiveInteger(value: string | undefined): number | undefined {
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+/** Reads the temporary v2 fan-out stopgap until S04 loadTuning replaces it. */
+export function readFanoutEnv(env: NodeJS.ProcessEnv): { chunkLines?: number; concurrency?: number } {
+  const chunkLines = positiveInteger(env.CONTEXT_LENS_CHUNK_LINES);
+  const concurrency = positiveInteger(env.CONTEXT_LENS_CONCURRENCY);
+  return {
+    ...(chunkLines !== undefined ? { chunkLines } : {}),
+    ...(concurrency !== undefined ? { concurrency } : {}),
+  };
+}
+
 /** Adapts the v2 `ctx.session` API to the client shape the runner was written against. */
 export function createV2Client(ctx: ContextLensV2Context): ContextLensClient {
   const appLog = asRecord(ctx.app)?.log;
@@ -96,7 +112,14 @@ export const ContextLensV2Plugin = {
   id: "context-lens",
   setup(ctx: ContextLensV2Context): void {
     const directory = directoryOf(ctx);
-    const hooks = createContextLensHooks({ client: createV2Client(ctx), directory });
+    const fanout = readFanoutEnv(process.env);
+    // S04's loadTuning replaces this plugin-v2 environment stopgap.
+    const hooks = createContextLensHooks({
+      client: createV2Client(ctx),
+      directory,
+      ...fanout,
+      ...(fanout.chunkLines !== undefined ? { chunkOverlapLines: 50 } : {}),
+    });
 
     ctx.tool.hook("execute.after", async (event: Record<string, any>) => {
       if (event.status !== "completed") return;

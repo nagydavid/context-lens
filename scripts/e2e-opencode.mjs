@@ -2,7 +2,7 @@
 // Uses a temporary XDG_CONFIG_HOME so user plugins/config are isolated; XDG_DATA_HOME
 // remains untouched because it contains OpenCode provider authentication.
 //
-// Scenarios (--scenario happy|persist|fallback|all, gated by CONTEXT_LENS_E2E=1):
+// Scenarios (--scenario happy|persist|fallback|large|all, gated by CONTEXT_LENS_E2E=1):
 //   happy    condensed excerpts + confidence, interception < 5s (R001, R003, R005)
 //   persist  two separate `opencode run` processes (= two plugin instances) with a
 //            pre-seeded project config; both must resolve modelSource "project" and the
@@ -12,6 +12,7 @@
 //            instances; picker-save persistence is covered by the S02/S04 hermetic tests.
 //   fallback a nonexistent subagent model; the read must return the full file and a
 //            context-lens warn `fallback <reason> for <path>` must be logged (R004).
+//   large    a 3000-line fixture with chunk fan-out enabled through the v2 env stopgap.
 import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -23,7 +24,7 @@ const root = resolve(import.meta.dirname, "..");
 const dist = join(root, "dist", "opencode");
 const fixtureModule = join(dist, "e2e-fixture.js");
 const pluginModule = join(dist, "plugin-v2.js");
-let E2E_FIXTURE_LINES, E2E_FIXTURE_SYMBOL;
+let E2E_FIXTURE_LINES, E2E_FIXTURE_SYMBOL, E2E_LARGE_FIXTURE_LINES, E2E_LARGE_FIXTURE_SYMBOL;
 const scenario = process.argv.includes("--scenario")
   ? process.argv[process.argv.indexOf("--scenario") + 1]
   : "all";
@@ -96,7 +97,9 @@ function hostDiagnostics(transcript) {
     .join("\n");
 }
 
-const HEADER = /\[context-lens\].*showing (\d+) of 400 lines/;
+function headerFor(totalLines) {
+  return new RegExp(`\\[context-lens\\].*showing (\\d+) of ${totalLines} lines`);
+}
 
 function parseEvents(stdout) {
   const events = [];
@@ -148,12 +151,12 @@ async function setupProject(temp, configHome, modelConfig, fixture) {
   return fixturePath;
 }
 
-async function opencodeRun(ctx, temp, configHome, fixturePath) {
-  const prompt = `Use the read tool to read ${fixturePath} in full (no offset or limit), then tell me what ${E2E_FIXTURE_SYMBOL} returns.`;
+async function opencodeRun(ctx, temp, configHome, fixturePath, symbol = E2E_FIXTURE_SYMBOL, extraEnv = {}) {
+  const prompt = `Use the read tool to read ${fixturePath} in full (no offset or limit), then tell me what ${symbol} returns.`;
   const started = Date.now();
   const result = await run(ctx.binary, ["run", "--standalone", "--auto", "--format", "json", "--print-logs", "--log-level", "debug", "--model", ctx.agentModel, prompt], {
     cwd: temp,
-    env: { ...process.env, PWD: temp, XDG_CONFIG_HOME: configHome },
+    env: { ...process.env, ...extraEnv, PWD: temp, XDG_CONFIG_HOME: configHome },
   });
   const transcript = `${result.stdout}\n${result.stderr}`;
   if (process.env.E2E_DUMP) await writeFile(process.env.E2E_DUMP, transcript, { flag: "a" });
@@ -162,18 +165,20 @@ async function opencodeRun(ctx, temp, configHome, fixturePath) {
   return { transcript, reads: readOutputs(result.stdout), logs: pluginLogs(transcript), wallMs: Date.now() - started };
 }
 
-function checkCondensed(r) {
-  const condensed = r.reads.find((o) => HEADER.test(o));
+function checkCondensed(r, totalLines = E2E_FIXTURE_LINES, maxElapsedMs = 5000) {
+  const header = headerFor(totalLines);
+  const condensed = r.reads.find((o) => header.test(o));
   assertion(condensed, `missing condensed context-lens tool output:\n${hostDiagnostics(r.transcript)}`);
   const confidence = condensed.match(/Confidence:\s*(\d)\/5/);
   assertion(confidence, "missing confidence N/5 in tool output");
   assertion(/--- lines \d+-\d+/.test(condensed), "missing numbered excerpt range in tool output");
-  const linesReturned = Number(condensed.match(HEADER)[1]);
-  assertion(linesReturned > 0 && linesReturned < E2E_FIXTURE_LINES, "tool output was not shorter than fixture");
+  const linesReturned = Number(condensed.match(header)[1]);
+  assertion(linesReturned > 0 && linesReturned < totalLines, "tool output was not shorter than fixture");
   const log = r.logs.find((l) => l.level === "info" && /^intercepted /.test(l.message));
   assertion(log, "missing context-lens intercepted log");
   const elapsedMs = Number(log.message.match(/(\d+)ms\)$/)?.[1]);
-  assertion(elapsedMs < 5000, `interception exceeded 5s: ${elapsedMs}ms`);
+  assertion(Number.isFinite(elapsedMs), "interception log did not end with elapsed milliseconds");
+  assertion(elapsedMs < maxElapsedMs, `interception exceeded ${maxElapsedMs}ms: ${elapsedMs}ms`);
   return { elapsedMs, confidence: Number(confidence[1]), linesReturned, modelSource: log.extra?.modelSource };
 }
 
@@ -208,7 +213,7 @@ async function scenarioFallback(ctx, temp, configHome) {
   const bad = { providerID: "openai", modelID: "context-lens-does-not-exist" };
   const fixturePath = await setupProject(temp, configHome, bad, ctx.fixture);
   const r = await opencodeRun(ctx, temp, configHome, fixturePath);
-  assertion(!r.reads.some((o) => HEADER.test(o)), "fallback read unexpectedly condensed");
+  assertion(!r.reads.some((o) => headerFor(E2E_FIXTURE_LINES).test(o)), "fallback read unexpectedly condensed");
   const full = r.reads.find((o) => o.includes("fixtureValue1()") && o.includes("fixtureValue400()") && o.includes("C0NTEXT-LENS"));
   assertion(full, `fallback read did not return the full file:\n${hostDiagnostics(r.transcript)}`);
   const log = r.logs.find((l) => l.level === "warn" && /^fallback \S+ for /.test(l.message));
@@ -220,6 +225,35 @@ async function scenarioFallback(ctx, temp, configHome) {
   };
 }
 
+async function scenarioLarge(ctx, temp, configHome) {
+  const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.largeFixture);
+  const runLarge = async (concurrency) => {
+    const raw = await opencodeRun(
+      ctx,
+      temp,
+      configHome,
+      fixturePath,
+      E2E_LARGE_FIXTURE_SYMBOL,
+      { CONTEXT_LENS_CHUNK_LINES: "1000", CONTEXT_LENS_CONCURRENCY: String(concurrency) },
+    );
+    const condensed = raw.reads.find((output) => headerFor(E2E_LARGE_FIXTURE_LINES).test(output));
+    assertion(condensed?.includes(`export function ${E2E_LARGE_FIXTURE_SYMBOL}`), "condensed output omitted fan-out symbol lines");
+    const result = checkCondensed(raw, E2E_LARGE_FIXTURE_LINES, Infinity);
+    const chunks = Number(raw.logs.find((log) => log.level === "info" && /^intercepted /.test(log.message))?.message.match(/chunks=(\d+)/)?.[1]);
+    assertion(chunks >= 3, `expected at least 3 chunks, got ${chunks}`);
+    return { ...result, chunks };
+  };
+
+  try {
+    return { scenario: "large", ok: true, concurrencyPinned: false, concurrency: 3, totalLines: E2E_LARGE_FIXTURE_LINES, ...await runLarge(3) };
+  } catch (error) {
+    const detail = String(error instanceof Error ? error.message : error);
+    if (!/(session|chunk \d+\/\d+.*(?:subagent|error)|subagent-error)/i.test(detail)) throw error;
+    const pinned = await runLarge(1);
+    return { scenario: "large", ok: true, concurrencyPinned: true, concurrency: 1, totalLines: E2E_LARGE_FIXTURE_LINES, ...pinned };
+  }
+}
+
 async function main() {
   if (process.env.CONTEXT_LENS_E2E !== "1") skip("set CONTEXT_LENS_E2E=1");
   if (!await exists(pluginModule) || !await exists(fixtureModule)) {
@@ -228,17 +262,20 @@ async function main() {
   const binary = await findBinary();
   const binaryProbe = await run(binary, ["--version"], { cwd: root, env: process.env });
   if (binaryProbe.code !== 0) skip("opencode binary not found");
-  const scenarios = { happy: scenarioHappy, persist: scenarioPersist, fallback: scenarioFallback };
+  const scenarios = { happy: scenarioHappy, persist: scenarioPersist, fallback: scenarioFallback, large: scenarioLarge };
   if (scenario !== "all" && !scenarios[scenario]) {
-    throw new Error("--scenario must be happy, persist, fallback, or all");
+    throw new Error("--scenario must be happy, persist, fallback, large, or all");
   }
   const fixtureMod = await import(pathToFileURL(fixtureModule));
   E2E_FIXTURE_LINES = fixtureMod.E2E_FIXTURE_LINES;
   E2E_FIXTURE_SYMBOL = fixtureMod.E2E_FIXTURE_SYMBOL;
+  E2E_LARGE_FIXTURE_LINES = fixtureMod.E2E_LARGE_FIXTURE_LINES;
+  E2E_LARGE_FIXTURE_SYMBOL = fixtureMod.E2E_LARGE_FIXTURE_SYMBOL;
   const agentModel = process.env.E2E_AGENT_MODEL || "opencode/deepseek-v4.1-flash-free";
   const subagentModel = process.env.E2E_SUBAGENT_MODEL || "opencode/beam-free";
   const ctx = {
     binary, agentModel, subagentModel, model: modelParts(subagentModel), fixture: fixtureMod.buildE2eFixture(),
+    largeFixture: fixtureMod.buildLargeE2eFixture(),
   };
   const hostVersion = binaryProbe.stdout.trim();
   const names = scenario === "all" ? Object.keys(scenarios) : [scenario];
@@ -282,6 +319,8 @@ async function main() {
     totalWallMs: Date.now() - started, confidence: (by("happy") ?? by("persist"))?.confidence,
     modelSource: (by("persist") ?? by("happy"))?.modelSources?.join(",") ?? by("happy")?.modelSource,
     fallbackReason: by("fallback")?.fallbackReason,
+    chunks: by("large")?.chunks,
+    concurrencyPinned: by("large")?.concurrencyPinned,
   }));
   if (failure || results.length !== names.length) process.exit(1);
 }
