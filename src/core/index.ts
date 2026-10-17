@@ -8,6 +8,7 @@ export type {
   SubagentAnswer,
   FileExcerpt,
   FallbackReason,
+  JudgeOutcome,
 } from "./models.js";
 export {
   buildCheapModelPrompt,
@@ -17,11 +18,20 @@ export * from "./file-guard.js";
 export * from "./transient.js";
 export { resolveQuestion } from "./question.js";
 export {
+  getResponseObject,
   normalizeRanges,
   parseSubagentResult,
   sliceExcerpts,
 } from "./parse.js";
 export type { ExcerptRange, ParseOutcome } from "./parse.js";
+export {
+  DEFAULT_JUDGE_CONFIDENCE_THRESHOLD,
+  JUDGE_SCHEMA,
+  buildJudgePrompt,
+  parseJudgeVerdict,
+  shouldRunJudge,
+} from "./judge.js";
+export type { JudgeMode, JudgeOptions } from "./judge.js";
 export { planChunks, mergeChunkAnswers } from "./chunking.js";
 export type { ChunkAnswer, ChunkWindow } from "./chunking.js";
 export { runChunkedRead, TimeoutError, NetworkError } from "./fanout.js";

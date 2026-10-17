@@ -34,7 +34,14 @@ export type FallbackReason =
   | "file-too-large"
   | "binary-file"
   | "unreadable"
-  | "network-error";
+  | "network-error"
+  | "judge-rejected";
+
+export interface JudgeOutcome {
+  verdict?: "sufficient" | "insufficient";
+  elapsedMs: number;
+  error?: string;
+}
 
 export interface InterceptionResult {
   filePath: string;
@@ -51,6 +58,7 @@ export interface InterceptionResult {
   elapsedMs?: number;
   attempts?: number;
   chunks?: number;
+  judge?: JudgeOutcome;
   fallback?: { reason: FallbackReason; detail?: string };
 }
 

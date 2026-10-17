@@ -116,7 +116,9 @@ export function sliceExcerpts(
   }));
 }
 
-function getResponseObject(result: SubagentResult): Record<string, unknown> | undefined {
+export function getResponseObject(
+  result: SubagentResult
+): Record<string, unknown> | undefined {
   if (typeof result.structured === "object" && result.structured !== null) {
     return result.structured as Record<string, unknown>;
   }
