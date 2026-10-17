@@ -180,4 +180,44 @@ describe("createCopilotHooks", () => {
     strictEqual(record.level, "info");
     strictEqual(record.intercepted, true);
   });
+
+  it("(o) serves repeat reads from cache, misses after an edit, and shares the cache across working directories", async () => {
+    const { hooks, runner, logs } = setup();
+    const first = await hooks.onPostToolUse(view(largePath));
+    const second = await hooks.onPostToolUse(view(largePath));
+    ok(first?.modifiedResult);
+    strictEqual(second?.modifiedResult?.textResultForLlm, first.modifiedResult.textResultForLlm);
+    strictEqual(runner.calls.length, 1);
+    ok(logs.some(({ line }) => line.includes("cacheHit=true")));
+
+    const otherDir = join(tmp, "other");
+    mkdirSync(otherDir, { recursive: true });
+    const otherPath = join(otherDir, "fixture.ts");
+    writeFileSync(otherPath, buildE2eFixture());
+    const shared = await hooks.onPostToolUse(buildViewInput({ path: otherPath, workingDirectory: otherDir, text: "original native view" }));
+    ok(shared?.modifiedResult);
+    strictEqual(runner.calls.length, 1);
+
+    const editedPath = join(tmp, "edited.ts");
+    writeFileSync(editedPath, buildE2eFixture());
+    await hooks.onPostToolUse(view(editedPath));
+    const callsBefore = runner.calls.length;
+    writeFileSync(editedPath, buildE2eFixture() + "\n// edited\n");
+    await hooks.onPostToolUse(view(editedPath));
+    ok(runner.calls.length > callsBefore);
+  });
+
+  it("(p) uses an injected cache", async () => {
+    const seen: string[] = [];
+    const store = new Map<string, any>();
+    const cache = {
+      get: (key: string) => { seen.push(`get`); return store.get(key); },
+      set: (key: string, value: any) => { seen.push(`set`); store.set(key, value); },
+    };
+    const { hooks, runner } = setup({ cache });
+    await hooks.onPostToolUse(view(largePath));
+    await hooks.onPostToolUse(view(largePath));
+    deepStrictEqual(seen, ["get", "set", "get"]);
+    strictEqual(runner.calls.length, 1);
+  });
 });

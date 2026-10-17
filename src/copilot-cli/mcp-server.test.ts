@@ -129,4 +129,14 @@ describe("MCP context_lens_read", () => {
     const messages = text.trim().split("\n").map((line) => JSON.parse(line));
     strictEqual(messages.length, 3); strictEqual(messages[0].error.code, -32700); strictEqual(messages[0].id, null); ok(messages.some((message) => message.id === 1)); ok(messages.some((message) => message.id === 2));
   });
+
+  it("serves a repeated read from cache with a cacheHit log line", async () => {
+    const item = project("cache"); const logs: string[] = [];
+    const test = server(item.dir, new FakeSubagentRunner({ text: answer }), { stderr: (line) => logs.push(line) });
+    const first = await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
+    const second = await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
+    strictEqual(second.content[0].text, first.content[0].text);
+    strictEqual(test.runner.calls.length, 1);
+    ok(logs.some((line) => line.includes("cacheHit=true")));
+  });
 });

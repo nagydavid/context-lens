@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve } from "path";
-import { ModelSelector, ReadInterceptor, eventLogLevel } from "../core/index.js";
+import { LruResultCache, ModelSelector, ReadInterceptor, eventLogLevel, type ResultCache } from "../core/index.js";
 import type { InterceptionEvent, JudgeOptions, SubagentRunner } from "../core/index.js";
 import { createOpenCodeModelPicker } from "./model-picker.js";
 import type { OpenCodeModelPickerOptions, OpenCodePickerUi } from "./model-picker.js";
@@ -30,6 +30,8 @@ export interface ContextLensHooksOptions {
   pickerOptions?: OpenCodeModelPickerOptions;
   /** Test seam: replaces the OpenCode child-session runner. */
   runner?: SubagentRunner;
+  /** Result cache shared by this host process; defaults to a bounded in-memory LRU. */
+  cache?: ResultCache;
   thresholdLines?: number;
   chunkLines?: number;
   chunkOverlapLines?: number;
@@ -71,7 +73,7 @@ function describeEvent(event: InterceptionEvent): string {
   const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
   const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
   if (event.intercepted) {
-    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
+    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${event.cacheHit ? ", cacheHit=true" : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
   }
   if (event.fallbackReason) {
     return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
@@ -102,6 +104,7 @@ export function createContextLensHooks(options: ContextLensHooksOptions): Contex
     }
   };
 
+  const cache = options.cache ?? new LruResultCache();
   const childSessions = new Set<string>();
   const runner =
     options.runner ??
@@ -126,6 +129,7 @@ export function createContextLensHooks(options: ContextLensHooksOptions): Contex
 
   const interceptor = new ReadInterceptor({
     runner,
+    cache,
     modelResolver: selector.resolve,
     thresholdLines: options.thresholdLines,
     chunkLines: options.chunkLines,

@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import {
+  LruResultCache,
   ModelSelector,
   ReadInterceptor,
   eventLogLevel,
@@ -10,6 +11,7 @@ import {
   statFile,
   type ConfigOptions,
   type InterceptionEvent,
+  type ResultCache,
   type InterceptionResult,
   type JudgeOptions,
   type SubagentRunner,
@@ -43,6 +45,7 @@ type ToolResult = { content: Array<{ type: "text"; text: string }>; isError: boo
 
 export interface McpServerOptions {
   runner?: SubagentRunner;
+  cache?: ResultCache;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   configOptions?: Pick<ConfigOptions, "homeDir" | "env">;
@@ -73,7 +76,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function describeEvent(event: InterceptionEvent): string {
   const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
   const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
-  if (event.intercepted) return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
+  if (event.intercepted) return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${event.cacheHit ? ", cacheHit=true" : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
   if (event.fallbackReason) return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
   return `passthrough ${event.filePath} (${event.lineCount} lines)`;
 }
@@ -165,9 +168,10 @@ export function createMcpServer(options: McpServerOptions = {}) {
   };
   const selector = new ModelSelector({ ...options.configOptions, projectRoot: cwd, onWarning: (message) => log("warn", message) });
   let runner = options.runner;
+  const cache = options.cache ?? new LruResultCache();
   let interceptor: ReadInterceptor | undefined;
   const interceptorFor = () => interceptor ??= new ReadInterceptor({
-    runner: runner ??= createCopilotRunner({ concurrency: options.concurrency }), modelResolver: selector.resolve,
+    cache, runner: runner ??= createCopilotRunner({ concurrency: options.concurrency }), modelResolver: selector.resolve,
     thresholdLines: options.thresholdLines, chunkLines: options.chunkLines, chunkOverlapLines: options.chunkOverlapLines,
     timeoutMs: options.timeoutMs, maxFileBytes: options.maxFileBytes,
     maxRetries: options.maxRetries, retryDelayMs: options.retryDelayMs, judge: options.judge,

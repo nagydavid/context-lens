@@ -1,12 +1,14 @@
 import { appendFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
+  LruResultCache,
   ModelSelector,
   ReadInterceptor,
   eventLogLevel,
   type ConfigOptions,
   type InterceptionEvent,
   type JudgeOptions,
+  type ResultCache,
   type SubagentRunner,
 } from "../core/index.js";
 import { renderInterceptionResult } from "../opencode/render.js";
@@ -25,6 +27,8 @@ type LogLevel = "debug" | "info" | "warn" | "error";
 
 export interface CopilotHooksOptions {
   runner?: SubagentRunner;
+  /** Result cache shared across all per-directory interceptors. */
+  cache?: ResultCache;
   thresholdLines?: number;
   chunkLines?: number;
   chunkOverlapLines?: number;
@@ -50,7 +54,7 @@ function describeEvent(event: InterceptionEvent): string {
   const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
   const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
   if (event.intercepted) {
-    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
+    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${event.cacheHit ? ", cacheHit=true" : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
   }
   if (event.fallbackReason) {
     return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
@@ -116,12 +120,14 @@ export function createCopilotHooks(
   };
 
   const runner = options.runner ?? createCopilotRunner({ concurrency: options.concurrency });
+  const cache = options.cache ?? new LruResultCache();
   const interceptors = new Map<string, ReadInterceptor>();
   const interceptorFor = (workingDirectory: string): ReadInterceptor => {
     let interceptor = interceptors.get(workingDirectory);
     if (!interceptor) {
       interceptor = new ReadInterceptor({
         runner,
+        cache,
         modelResolver: selectorFor(workingDirectory).resolve,
         thresholdLines: options.thresholdLines,
         chunkLines: options.chunkLines,

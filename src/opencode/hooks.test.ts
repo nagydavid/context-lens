@@ -290,4 +290,23 @@ describe("createContextLensHooks", () => {
     strictEqual(runner.calls.length, 1);
     ok(logs.some((entry) => entry.body.message.startsWith("intercepted ") && !entry.body.message.includes("judge=")));
   });
+
+  it("(o) serves a repeat read from the shared cache and misses after an edit", async () => {
+    const logs: Array<{ body: { message: string } }> = [];
+    const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ContextLensClient;
+    const { hooks, runner } = setup({ client });
+    const cachePath = join(tmp, "cache-me.ts");
+    writeFileSync(cachePath, Array.from({ length: 400 }, (_, i) => `const cached_${i + 1} = ${i + 1};`).join("\n"));
+    const first = mkOutput(cachePath);
+    await hooks["tool.execute.after"](call("read", { filePath: cachePath }), first);
+    const second = mkOutput(cachePath);
+    await hooks["tool.execute.after"](call("read", { filePath: cachePath }), second);
+    await tick();
+    strictEqual(second.output, first.output);
+    strictEqual(runner.calls.length, 1);
+    ok(logs.some((entry) => entry.body.message.includes("cacheHit=true")));
+    writeFileSync(cachePath, Array.from({ length: 400 }, (_, i) => `const edited_${i + 1} = ${i + 1};`).join("\n"));
+    await hooks["tool.execute.after"](call("read", { filePath: cachePath }), mkOutput(cachePath));
+    strictEqual(runner.calls.length, 2);
+  });
 });
