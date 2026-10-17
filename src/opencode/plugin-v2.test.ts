@@ -1,4 +1,7 @@
 import { deepStrictEqual, ok, strictEqual } from "node:assert";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { ContextLensV2Plugin, createV2Client, readFanoutEnv } from "./plugin-v2.js";
 import type { ContextLensV2Context } from "./plugin-v2.js";
@@ -48,6 +51,49 @@ describe("ContextLensV2Plugin (OpenCode v2.0.30 host contract)", () => {
     const { ctx, hooks } = makeCtx();
     ContextLensV2Plugin.setup(ctx);
     await hooks["session.prompt"]({ sessionID: "s", prompt: null });
+  });
+});
+
+describe("ContextLensV2Plugin tuning", () => {
+  it("honours CONTEXT_LENS_CHUNK_LINES from process env via loadTuning", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "context-lens-v2-"));
+    const saved = { ...process.env };
+    try {
+      mkdirSync(join(dir, ".context-lens"));
+      writeFileSync(
+        join(dir, ".context-lens", "config.json"),
+        JSON.stringify({ version: 1, model: { providerID: "p", modelID: "m" } })
+      );
+      const file = join(dir, "big.ts");
+      writeFileSync(file, Array.from({ length: 3000 }, (_, i) => `const v_${i + 1} = ${i + 1};`).join("\n"));
+      process.env.HOME = dir;
+      process.env.XDG_CONFIG_HOME = join(dir, "xdg");
+      process.env.CONTEXT_LENS_CHUNK_LINES = "1000";
+      process.env.CONTEXT_LENS_CONCURRENCY = "3";
+      delete process.env.CONTEXT_LENS_CACHE;
+      delete process.env.CONTEXT_LENS_THRESHOLD;
+      delete process.env.CONTEXT_LENS_JUDGE;
+      let generates = 0;
+      const { ctx, hooks } = makeCtx({
+        generate: async () => {
+          generates += 1;
+          return { data: { text: JSON.stringify({ excerpts: [{ startLine: 10, endLine: 12 }], summary: "s", confidence: 4 }) } };
+        },
+      });
+      (ctx as { location?: unknown }).location = { directory: dir };
+      ContextLensV2Plugin.setup(ctx);
+      const result: { output: string; content?: unknown } = { output: "x\n".repeat(3000) };
+      await hooks["tool.execute.after"]({ tool: "read", status: "completed", sessionID: "s", id: "c", input: { path: file }, result });
+      strictEqual(generates, 4);
+      ok(result.output.includes("lines 10-12"));
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+      for (const key of ["CONTEXT_LENS_CHUNK_LINES", "CONTEXT_LENS_CONCURRENCY", "CONTEXT_LENS_CACHE", "CONTEXT_LENS_THRESHOLD", "CONTEXT_LENS_JUDGE"]) {
+        if (saved[key] === undefined) delete process.env[key];
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

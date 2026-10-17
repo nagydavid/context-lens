@@ -1,5 +1,14 @@
 import { isAbsolute, relative, resolve } from "path";
-import { LruResultCache, ModelSelector, ReadInterceptor, eventLogLevel, type ResultCache } from "../core/index.js";
+import {
+  LruResultCache,
+  ModelSelector,
+  ReadInterceptor,
+  eventLogLevel,
+  loadTuning,
+  tuningToInterceptorOptions,
+  type ResultCache,
+  type TuningSettings,
+} from "../core/index.js";
 import type { InterceptionEvent, JudgeOptions, SubagentRunner } from "../core/index.js";
 import { createOpenCodeModelPicker } from "./model-picker.js";
 import type { OpenCodeModelPickerOptions, OpenCodePickerUi } from "./model-picker.js";
@@ -104,13 +113,29 @@ export function createContextLensHooks(options: ContextLensHooksOptions): Contex
     }
   };
 
-  const cache = options.cache ?? new LruResultCache();
+  const explicit: Partial<TuningSettings> = {};
+  if (options.thresholdLines !== undefined) explicit.thresholdLines = options.thresholdLines;
+  if (options.timeoutMs !== undefined) explicit.timeoutMs = options.timeoutMs;
+  if (options.concurrency !== undefined) explicit.concurrency = options.concurrency;
+  if (options.chunkLines !== undefined) explicit.chunkLines = options.chunkLines;
+  if (options.chunkOverlapLines !== undefined) explicit.chunkOverlapLines = options.chunkOverlapLines;
+  if (options.judge?.mode !== undefined) explicit.judge = options.judge.mode;
+  const { settings } = loadTuning({
+    ...options.configOptions,
+    projectRoot: directory,
+    onWarning: (m) => log("warn", m),
+    explicit,
+  });
+
+  const cache =
+    options.cache ??
+    (settings.cacheMaxEntries > 0 ? new LruResultCache({ maxEntries: settings.cacheMaxEntries }) : undefined);
   const childSessions = new Set<string>();
   const runner =
     options.runner ??
     createOpenCodeRunner(client, {
       titlePrefix: "context-lens",
-      concurrency: options.concurrency,
+      concurrency: settings.concurrency,
       onSessionCreated: (id) => {
         childSessions.add(id);
         if (childSessions.size > MAX_CHILD_SESSIONS) {
@@ -131,14 +156,11 @@ export function createContextLensHooks(options: ContextLensHooksOptions): Contex
     runner,
     cache,
     modelResolver: selector.resolve,
-    thresholdLines: options.thresholdLines,
-    chunkLines: options.chunkLines,
-    chunkOverlapLines: options.chunkOverlapLines,
-    timeoutMs: options.timeoutMs,
+    ...tuningToInterceptorOptions(settings),
     maxFileBytes: options.maxFileBytes,
     maxRetries: options.maxRetries,
     retryDelayMs: options.retryDelayMs,
-    judge: options.judge,
+    ...(options.judge ? { judge: options.judge } : {}),
     logger: (event) =>
       log(
         eventLogLevel(event),

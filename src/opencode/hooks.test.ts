@@ -309,4 +309,89 @@ describe("createContextLensHooks", () => {
     await hooks["tool.execute.after"](call("read", { filePath: cachePath }), mkOutput(cachePath));
     strictEqual(runner.calls.length, 2);
   });
+
+  describe("tuning config", () => {
+    const writeProjectConfig = (dir: string, tuning: unknown) => {
+      mkdirSync(join(dir, ".context-lens"), { recursive: true });
+      writeFileSync(join(dir, ".context-lens", "config.json"), JSON.stringify({ version: 1, tuning }));
+    };
+    const tuningDir = (name: string, tuning: unknown) => {
+      const dir = mkdtempSync(join(tmp, `${name}-`));
+      writeProjectConfig(dir, tuning);
+      return dir;
+    };
+    const lineFile = (dir: string, lines: number, name = "f.ts") => {
+      const path = join(dir, name);
+      writeFileSync(path, Array.from({ length: lines }, (_, i) => `const v_${i + 1} = ${i + 1};`).join("\n"));
+      return path;
+    };
+    const mkLogClient = (logs: Array<{ body: { level: string; message: string } }>) =>
+      ({ ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } }) as ContextLensClient;
+    const build = (directory: string, extra: Partial<ContextLensHooksOptions> = {}) => {
+      const runner = new FakeSubagentRunner({ structured: answer });
+      const logs: Array<{ body: { level: string; message: string } }> = [];
+      const hooks = createContextLensHooks({
+        client: mkLogClient(logs),
+        directory,
+        runner,
+        configOptions: { homeDir: tmp, env: { XDG_CONFIG_HOME: join(tmp, "xdg") } },
+        ...extra,
+      });
+      return { hooks, runner, logs };
+    };
+
+    it("(p) project thresholdLines intercepts a file the default would pass", async () => {
+      const dir = tuningDir("thr", { thresholdLines: 300 });
+      const file = lineFile(dir, 320);
+      const withConfig = build(dir);
+      const out = mkOutput(file);
+      await withConfig.hooks["tool.execute.after"](call("read", { filePath: file }), out);
+      strictEqual(withConfig.runner.calls.length, 1);
+      ok(out.output.includes("lines 10-12"));
+
+      const plain = build(tmp);
+      await plain.hooks["tool.execute.after"](call("read", { filePath: file }), mkOutput(file));
+      strictEqual(plain.runner.calls.length, 0);
+    });
+
+    it("(q) project chunkLines fans out chunk calls", async () => {
+      const dir = tuningDir("chunk", { chunkLines: 1000, chunkOverlapLines: 50 });
+      const file = lineFile(dir, 3000);
+      const { hooks, runner, logs } = build(dir);
+      await hooks["tool.execute.after"](call("read", { filePath: file }), mkOutput(file));
+      await tick();
+      strictEqual(runner.calls.length, 4);
+      ok(logs.some((entry) => /chunks=4/.test(entry.body.message)));
+    });
+
+    it("(r) explicit thresholdLines beats project config", async () => {
+      const dir = tuningDir("explicit", { thresholdLines: 300 });
+      const file = lineFile(dir, 320);
+      const { hooks, runner } = build(dir, { thresholdLines: 500 });
+      await hooks["tool.execute.after"](call("read", { filePath: file }), mkOutput(file));
+      strictEqual(runner.calls.length, 0);
+    });
+
+    it("(s) cacheMaxEntries 0 disables the shared cache", async () => {
+      const dir = tuningDir("nocache", { cacheMaxEntries: 0 });
+      const file = lineFile(dir, 400);
+      const { hooks, runner } = build(dir);
+      await hooks["tool.execute.after"](call("read", { filePath: file }), mkOutput(file));
+      await hooks["tool.execute.after"](call("read", { filePath: file }), mkOutput(file));
+      strictEqual(runner.calls.length, 2);
+    });
+
+    it("(t) env tuning applies and an invalid value warns and uses the default", async () => {
+      const dir = tuningDir("invalid", { thresholdLines: "lots" });
+      const file = lineFile(dir, 320);
+      const { hooks, runner, logs } = build(dir);
+      await hooks["tool.execute.after"](call("read", { filePath: file }), mkOutput(file));
+      strictEqual(runner.calls.length, 0);
+      ok(logs.some((entry) => entry.body.level === "warn" && entry.body.message.includes("ignoring") && entry.body.message.includes("thresholdLines")));
+
+      const viaEnv = build(dir, { configOptions: { homeDir: tmp, env: { XDG_CONFIG_HOME: join(tmp, "xdg"), CONTEXT_LENS_THRESHOLD: "300" } } });
+      await viaEnv.hooks["tool.execute.after"](call("read", { filePath: file }), mkOutput(file));
+      strictEqual(viaEnv.runner.calls.length, 1);
+    });
+  });
 });

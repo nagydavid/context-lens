@@ -55,7 +55,7 @@ function positiveInteger(value: string | undefined): number | undefined {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
-/** Reads the temporary v2 fan-out stopgap until S04 loadTuning replaces it. */
+/** @deprecated Superseded by `loadTuning` in core; no longer used by the plugin. */
 export function readFanoutEnv(env: NodeJS.ProcessEnv): { chunkLines?: number; concurrency?: number } {
   const chunkLines = positiveInteger(env.CONTEXT_LENS_CHUNK_LINES);
   const concurrency = positiveInteger(env.CONTEXT_LENS_CONCURRENCY);
@@ -112,13 +112,10 @@ export const ContextLensV2Plugin = {
   id: "context-lens",
   setup(ctx: ContextLensV2Context): void {
     const directory = directoryOf(ctx);
-    const fanout = readFanoutEnv(process.env);
-    // S04's loadTuning replaces this plugin-v2 environment stopgap.
+    // Tuning (env, project/global config) is resolved inside createContextLensHooks.
     const hooks = createContextLensHooks({
       client: createV2Client(ctx),
       directory,
-      ...fanout,
-      ...(fanout.chunkLines !== undefined ? { chunkOverlapLines: 50 } : {}),
     });
 
     ctx.tool.hook("execute.after", async (event: Record<string, any>) => {
