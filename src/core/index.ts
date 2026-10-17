@@ -22,6 +22,8 @@ export {
   sliceExcerpts,
 } from "./parse.js";
 export type { ExcerptRange, ParseOutcome } from "./parse.js";
+export { planChunks, mergeChunkAnswers } from "./chunking.js";
+export type { ChunkAnswer, ChunkWindow } from "./chunking.js";
 export {
   ConcurrencyLimitedRunner,
   SerialRunner,

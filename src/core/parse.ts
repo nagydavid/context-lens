@@ -66,7 +66,8 @@ export function parseSubagentResult(result: SubagentResult): ParseOutcome {
 
 export function normalizeRanges(
   excerpts: ExcerptRange[],
-  lineCount: number
+  lineCount: number,
+  maxRanges = 10
 ): ExcerptRange[] {
   if (!Number.isFinite(lineCount) || lineCount < 1) return [];
 
@@ -100,7 +101,7 @@ export function normalizeRanges(
     }
   }
 
-  return merged.slice(0, 10);
+  return merged.slice(0, maxRanges);
 }
 
 export function sliceExcerpts(

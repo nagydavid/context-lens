@@ -137,13 +137,14 @@ describe("normalizeRanges", () => {
     );
   });
 
-  it("caps disjoint normalized ranges at ten", () => {
-    const ranges = Array.from({ length: 11 }, (_, index) => ({
+  it("caps disjoint normalized ranges at ten by default", () => {
+    const ranges = Array.from({ length: 12 }, (_, index) => ({
       startLine: index * 2 + 1,
       endLine: index * 2 + 1,
     }));
 
     strictEqual(normalizeRanges(ranges, 30).length, 10);
+    strictEqual(normalizeRanges(ranges, 30, 12).length, 12);
   });
 });
 
