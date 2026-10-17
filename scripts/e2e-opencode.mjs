@@ -63,6 +63,8 @@ function run(command, args, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      // `opencode run` leaves its `serve --stdio` child behind on some exits; reap the whole group.
+      try { if (process.platform !== "win32") process.kill(-child.pid, "SIGKILL"); } catch { /* group already gone */ }
       resolveRun({ code, signal, stdout, stderr, timedOut });
     };
     const timer = setTimeout(() => {
@@ -260,7 +262,7 @@ async function scenarioLarge(ctx, temp, configHome) {
 
 async function scenarioCache(ctx, temp, configHome) {
   const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
-  const prompt = `Use the read tool to read ${fixturePath} in full (no offset or limit). Then use the read tool to read ${fixturePath} in full again. Then tell me what ${E2E_FIXTURE_SYMBOL} returns.`;
+  const prompt = `Use the read tool to read ${fixturePath} in full (no offset or limit). Wait for that result, and only then use the read tool to read ${fixturePath} in full again; never issue both reads in the same step. Then tell me what ${E2E_FIXTURE_SYMBOL} returns.`;
   const r = await opencodeRun(ctx, temp, configHome, fixturePath, E2E_FIXTURE_SYMBOL, {}, prompt);
   checkCondensed(r);
   const intercepts = r.logs.filter((l) => l.level === "info" && /^intercepted /.test(l.message));

@@ -170,6 +170,38 @@ describe("ReadInterceptor result cache", () => {
     });
   });
 
+  describe("concurrent identical reads", () => {
+    const slow = (respond: (request: SubagentRequest) => SubagentResult) => {
+      let calls = 0;
+      return { get calls() { return calls; }, async run(request: SubagentRequest) { calls++; await new Promise((r) => setTimeout(r, 20)); return respond(request); } };
+    };
+
+    it("share one runner call and report the follower as a cache hit", async () => {
+      await withFile(large, async (filePath) => {
+        const runner = slow(answer);
+        const interceptor = new ReadInterceptor({ runner, thresholdLines: 1, model, cache: new LruResultCache() });
+        const [a, b] = await Promise.all([interceptor.intercept({ filePath, agentContext: {} }), interceptor.intercept({ filePath, agentContext: {} })]);
+        strictEqual(runner.calls, 1);
+        strictEqual(a.cacheHit, undefined);
+        strictEqual(b.cacheHit, true);
+        deepStrictEqual(b.excerpts, a.excerpts);
+      });
+    });
+
+    it("run independently when the first one falls back", async () => {
+      await withFile(large, async (filePath) => {
+        let n = 0;
+        const runner = slow((request) => (n++ === 0 ? { text: "garbage" } : answer(request)));
+        const interceptor = new ReadInterceptor({ runner, thresholdLines: 1, model, cache: new LruResultCache() });
+        const [a, b] = await Promise.all([interceptor.intercept({ filePath, agentContext: {} }), interceptor.intercept({ filePath, agentContext: {} })]);
+        strictEqual(a.wasIntercepted, false);
+        strictEqual(b.wasIntercepted, true);
+        strictEqual(b.cacheHit, undefined);
+        strictEqual(runner.calls, 2);
+      });
+    });
+  });
+
   it("calls the runner each time without a cache", async () => {
     await withFile(large, async (filePath) => {
       const runner = new FakeSubagentRunner(answer);

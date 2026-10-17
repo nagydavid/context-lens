@@ -66,6 +66,7 @@ function errorMessage(error: unknown): string {
 
 export class ReadInterceptor {
   private readonly options: InterceptOptions;
+  private readonly inflight = new Map<string, Promise<InterceptionResult>>();
 
   constructor(options: InterceptOptions = {}) {
     this.options = options;
@@ -132,8 +133,18 @@ export class ReadInterceptor {
       const chunked = Number.isFinite(this.options.chunkLines) && Number.isInteger(this.options.chunkLines) && this.options.chunkLines! >= 1 && windows.length > 1;
       const cache = this.options.cache;
       let key = "";
+      const lookupStart = performance.now();
+      const serveShared = (hit: InterceptionResult): InterceptionResult => {
+        const elapsedMs = performance.now() - lookupStart;
+        const { attempts: _attempts, ...rest } = hit;
+        event = {
+          filePath, lineCount, intercepted: true, elapsedMs, confidence: hit.confidence, questionSource: resolvedQuestion.source, modelSource,
+          ...(hit.chunks !== undefined ? { chunks: hit.chunks } : {}), ...(hit.judge ? { judge: hit.judge } : {}),
+          ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}), cacheHit: true,
+        };
+        return { ...rest, filePath, cacheHit: true, elapsedMs };
+      };
       if (cache) {
-        const lookupStart = performance.now();
         let hit: InterceptionResult | undefined;
         try {
           key = cacheKey({
@@ -143,21 +154,27 @@ export class ReadInterceptor {
           });
           hit = cache.get(key);
         } catch { hit = undefined; }
-        if (hit) {
-          const elapsedMs = performance.now() - lookupStart;
-          const { attempts: _attempts, ...rest } = hit;
-          event = {
-            filePath, lineCount, intercepted: true, elapsedMs, confidence: hit.confidence, questionSource: resolvedQuestion.source, modelSource,
-            ...(hit.chunks !== undefined ? { chunks: hit.chunks } : {}), ...(hit.judge ? { judge: hit.judge } : {}),
-            ...(modelResolutionDetail ? { detail: modelResolutionDetail } : {}), cacheHit: true,
-          };
-          return { ...rest, filePath, cacheHit: true, elapsedMs };
+        if (hit) return serveShared(hit);
+        // A concurrent identical read joins the in-flight one. If that one does not produce a
+        // cacheable result, fall through and run our own.
+        const leader = key ? this.inflight.get(key) : undefined;
+        if (leader) {
+          const shared = await leader.catch(() => undefined);
+          if (shared?.wasIntercepted && !shared.judge?.error) return serveShared(shared);
         }
       }
       const setEvent = (next: InterceptionEvent) => { event = next; };
-      const result = chunked
-        ? await this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent })
-        : await this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent });
+      const compute = (): Promise<InterceptionResult> => chunked
+        ? this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent })
+        : this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent });
+      let result: InterceptionResult;
+      if (cache && key && !this.inflight.has(key)) {
+        const pending = compute();
+        this.inflight.set(key, pending);
+        try { result = await pending; } finally { this.inflight.delete(key); }
+      } else {
+        result = await compute();
+      }
       if (cache && key && result.wasIntercepted && !result.judge?.error) {
         const { cacheHit: _c, elapsedMs: _e, attempts: _a, ...stripped } = result;
         try { cache.set(key, stripped); } catch { /* cache is best-effort */ }

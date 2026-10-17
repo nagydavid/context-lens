@@ -214,7 +214,7 @@ With `chunkLines` set above 0, a file longer than `chunkLines` is split into ove
 
 ### Cache
 
-Results are cached in memory, per host process, keyed by the file's SHA-256, the question, the model, the prompt version, the chunk configuration and the judge mode. Only intercepted results are stored (fallbacks and results with a judge error are not). The cache is bounded to `cacheMaxEntries` entries and about 4 MB. `CONTEXT_LENS_CACHE=off` or `0` disables it. One-shot `copilot -p` and `opencode run` processes only reuse results within that single run.
+Results are cached in memory, per host process, keyed by the file's SHA-256, the question, the model, the prompt version, the chunk configuration and the judge mode. Only intercepted results are stored (fallbacks and results with a judge error are not). The cache is bounded to `cacheMaxEntries` entries and about 4 MB. `CONTEXT_LENS_CACHE=off` or `0` disables it. Concurrent identical reads (same key, e.g. an agent issuing the same `read` twice in one step) share one runner call: the later reads wait for the first and are served with `cacheHit=true`; if the first falls back, each later read runs its own call. One-shot `copilot -p` and `opencode run` processes only reuse results within that single run.
 
 ### Reading the logs
 

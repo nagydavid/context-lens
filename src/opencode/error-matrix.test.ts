@@ -274,7 +274,8 @@ describe("error matrix (R004)", () => {
       strictEqual(inputs, 1);
       strictEqual(selects, 1);
       for (const out of outs) ok(out.output.includes("lines 10-12"));
-      strictEqual(sessions, 3);
+      // Identical concurrent reads coalesce into one subagent session.
+      strictEqual(sessions, 1);
       strictEqual(maxInFlight, 1);
       ok(existsSync(join(dir, ".context-lens", "config.json")));
     } finally {
