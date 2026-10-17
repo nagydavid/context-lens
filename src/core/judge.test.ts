@@ -1,6 +1,7 @@
 import { deepStrictEqual, match, strictEqual } from "node:assert";
 import { describe, it } from "node:test";
 import type { SubagentResult } from "./subagent.js";
+import { eventLogLevel } from "./interceptor.js";
 import {
   DEFAULT_JUDGE_CONFIDENCE_THRESHOLD,
   JUDGE_SCHEMA,
@@ -79,6 +80,15 @@ describe("parseJudgeVerdict", () => {
       if (!parsed.ok) match(parsed.detail, detail);
     });
   }
+});
+
+describe("eventLogLevel", () => {
+  it("warns for judge errors before evaluating intercept and fallback state", () => {
+    strictEqual(eventLogLevel({ filePath: "a", lineCount: 1, intercepted: true, judge: { elapsedMs: 1, error: "bad JSON" } }), "warn");
+    strictEqual(eventLogLevel({ filePath: "a", lineCount: 1, intercepted: true }), "info");
+    strictEqual(eventLogLevel({ filePath: "a", lineCount: 1, intercepted: false, fallbackReason: "judge-rejected" }), "warn");
+    strictEqual(eventLogLevel({ filePath: "a", lineCount: 1, intercepted: false }), "debug");
+  });
 });
 
 describe("shouldRunJudge", () => {

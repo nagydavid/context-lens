@@ -5,11 +5,13 @@ import type { Readable, Writable } from "node:stream";
 import {
   ModelSelector,
   ReadInterceptor,
+  eventLogLevel,
   readTextFile,
   statFile,
   type ConfigOptions,
   type InterceptionEvent,
   type InterceptionResult,
+  type JudgeOptions,
   type SubagentRunner,
 } from "../core/index.js";
 import { renderInterceptionResult } from "../opencode/render.js";
@@ -52,6 +54,7 @@ export interface McpServerOptions {
   maxFileBytes?: number;
   maxRetries?: number;
   retryDelayMs?: number;
+  judge?: JudgeOptions;
   stderr?: (line: string) => void;
   logFile?: string;
 }
@@ -68,8 +71,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function describeEvent(event: InterceptionEvent): string {
-  if (event.intercepted) return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}, ${Math.round(event.elapsedMs ?? 0)}ms)`;
-  if (event.fallbackReason) return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}`;
+  const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
+  const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
+  if (event.intercepted) return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
+  if (event.fallbackReason) return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
   return `passthrough ${event.filePath} (${event.lineCount} lines)`;
 }
 
@@ -165,8 +170,8 @@ export function createMcpServer(options: McpServerOptions = {}) {
     runner: runner ??= createCopilotRunner({ concurrency: options.concurrency }), modelResolver: selector.resolve,
     thresholdLines: options.thresholdLines, chunkLines: options.chunkLines, chunkOverlapLines: options.chunkOverlapLines,
     timeoutMs: options.timeoutMs, maxFileBytes: options.maxFileBytes,
-    maxRetries: options.maxRetries, retryDelayMs: options.retryDelayMs,
-    logger: (event) => log(event.intercepted ? "info" : event.fallbackReason ? "warn" : "debug", describeEvent(event), { ...event }),
+    maxRetries: options.maxRetries, retryDelayMs: options.retryDelayMs, judge: options.judge,
+    logger: (event) => log(eventLogLevel(event), describeEvent(event), { ...event }),
   });
   return {
     async handleMessage(msg: unknown): Promise<JsonRpcResponse | undefined> {

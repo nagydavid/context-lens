@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
+import { JUDGE_SCHEMA } from "../core/judge.js";
 import { createCopilotHooks } from "./hooks.js";
 import { buildE2eFixture, buildViewInput, E2E_FIXTURE_SYMBOL } from "./probe-fixture.js";
 
@@ -154,7 +155,24 @@ describe("createCopilotHooks", () => {
     ok(fallbackLogs.some(({ record }) => record.level === "warn" && String(record.message).includes("chunk 2/4: chunk failure")));
   });
 
-  it("(m) appends structured JSONL diagnostics when configured", async () => {
+  it("(m) renders judge outcomes and logs judge errors as warnings", async () => {
+    for (const [judgeResult, expected, level, intercepted] of [
+      [{ structured: { verdict: "sufficient" } }, "judge=sufficient", "info", true],
+      [{ structured: { verdict: "insufficient", reason: "missing context" } }, "judge-rejected", "warn", false],
+      [{ text: "not JSON" }, "judge=error", "warn", true],
+    ] as const) {
+      const runner = new FakeSubagentRunner((request) => request.schema === JUDGE_SCHEMA ? judgeResult : { structured: answer });
+      const logs: { line: string; record: Record<string, unknown> }[] = [];
+      const hooks = createCopilotHooks({ runner, judge: { mode: "always" }, configOptions: { homeDir: tmp, env: {} }, env: {}, logSink: (line, record) => logs.push({ line, record: record as Record<string, unknown> }) });
+      const result = await hooks.onPostToolUse(view(largePath));
+      strictEqual(Boolean(result?.modifiedResult), intercepted);
+      if (intercepted) ok(result?.modifiedResult?.textResultForLlm.includes("[context-lens]"));
+      ok(logs.some(({ line, record }) => record.level === level && line.includes(expected)));
+      strictEqual(runner.calls.filter((request) => request.schema === JUDGE_SCHEMA).length, 1);
+    }
+  });
+
+  it("(n) appends structured JSONL diagnostics when configured", async () => {
     const logFile = join(tmp, "context-lens.jsonl");
     const { hooks } = setup({ env: { CONTEXT_LENS_LOG_FILE: logFile } });
     await hooks.onPostToolUse(view(largePath));

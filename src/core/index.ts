@@ -1,4 +1,4 @@
-export { ReadInterceptor, interceptRead } from "./interceptor.js";
+export { ReadInterceptor, eventLogLevel, interceptRead } from "./interceptor.js";
 export type { InterceptOptions, InterceptionEvent } from "./interceptor.js";
 export type {
   AgentContext,

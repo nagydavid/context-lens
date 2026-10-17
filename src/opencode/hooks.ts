@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve } from "path";
-import { ModelSelector, ReadInterceptor } from "../core/index.js";
-import type { InterceptionEvent, SubagentRunner } from "../core/index.js";
+import { ModelSelector, ReadInterceptor, eventLogLevel } from "../core/index.js";
+import type { InterceptionEvent, JudgeOptions, SubagentRunner } from "../core/index.js";
 import { createOpenCodeModelPicker } from "./model-picker.js";
 import type { OpenCodeModelPickerOptions, OpenCodePickerUi } from "./model-picker.js";
 import { renderInterceptionResult } from "./render.js";
@@ -38,6 +38,7 @@ export interface ContextLensHooksOptions {
   maxFileBytes?: number;
   maxRetries?: number;
   retryDelayMs?: number;
+  judge?: JudgeOptions;
   /** Test seam: isolates config resolution from the real user environment. */
   configOptions?: { homeDir?: string; env?: Record<string, string | undefined> };
 }
@@ -67,11 +68,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function describeEvent(event: InterceptionEvent): string {
+  const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
+  const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
   if (event.intercepted) {
-    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}, ${Math.round(event.elapsedMs ?? 0)}ms)`;
+    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
   }
   if (event.fallbackReason) {
-    return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}`;
+    return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
   }
   return `passthrough ${event.filePath} (${event.lineCount} lines)`;
 }
@@ -131,9 +134,10 @@ export function createContextLensHooks(options: ContextLensHooksOptions): Contex
     maxFileBytes: options.maxFileBytes,
     maxRetries: options.maxRetries,
     retryDelayMs: options.retryDelayMs,
+    judge: options.judge,
     logger: (event) =>
       log(
-        event.intercepted ? "info" : event.fallbackReason ? "warn" : "debug",
+        eventLogLevel(event),
         describeEvent(event),
         { ...event }
       ),

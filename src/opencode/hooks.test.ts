@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
+import { JUDGE_SCHEMA } from "../core/judge.js";
 import { ConcurrencyLimitedRunner } from "../core/subagent.js";
 import { createContextLensHooks } from "./hooks.js";
 import type { ContextLensClient, ContextLensHooksOptions } from "./hooks.js";
@@ -257,5 +258,36 @@ describe("createContextLensHooks", () => {
     await hooks["tool.execute.after"](call("read", { filePath: largePath }, "parent"), outer);
     deepStrictEqual(nested, nestedSnapshot);
     ok(outer.output.includes("lines 10-12"));
+  });
+
+  it("(m) renders judge outcomes and warns on a judge error", async () => {
+    for (const [judgeResult, expected, level, intercepted] of [
+      [{ structured: { verdict: "sufficient" } }, "judge=sufficient", "info", true],
+      [{ structured: { verdict: "insufficient", reason: "missing context" } }, "judge-rejected", "warn", false],
+      [{ text: "not JSON" }, "judge=error", "warn", true],
+    ] as const) {
+      const logs: Array<{ body: { level: string; message: string } }> = [];
+      const runner = new FakeSubagentRunner((request) => request.schema === JUDGE_SCHEMA ? judgeResult : { structured: answer });
+      const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ContextLensClient;
+      const hooks = createContextLensHooks({ client, directory: tmp, runner, judge: { mode: "always" }, configOptions: { homeDir: tmp, env: {} } });
+      const out = mkOutput(largePath);
+      const original = out.output;
+      await hooks["tool.execute.after"](call("read", { filePath: largePath }), out);
+      await tick();
+      strictEqual(out.output.includes("lines 10-12"), intercepted);
+      if (!intercepted) strictEqual(out.output, original);
+      ok(logs.some((entry) => entry.body.level === level && entry.body.message.includes(expected)));
+      strictEqual(runner.calls.filter((request) => request.schema === JUDGE_SCHEMA).length, 1);
+    }
+  });
+
+  it("(n) omits judge calls and judge diagnostics when judge is unset", async () => {
+    const logs: Array<{ body: { message: string } }> = [];
+    const client = { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ContextLensClient;
+    const { hooks, runner } = setup({ client });
+    await hooks["tool.execute.after"](call("read", { filePath: largePath }), mkOutput(largePath));
+    await tick();
+    strictEqual(runner.calls.length, 1);
+    ok(logs.some((entry) => entry.body.message.startsWith("intercepted ") && !entry.body.message.includes("judge=")));
   });
 });

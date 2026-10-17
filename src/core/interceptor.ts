@@ -35,6 +35,13 @@ export interface InterceptionEvent {
   judge?: JudgeOutcome;
 }
 
+export function eventLogLevel(event: InterceptionEvent): "info" | "warn" | "debug" {
+  if (event.judge?.error) return "warn";
+  if (event.intercepted) return "info";
+  if (event.fallbackReason) return "warn";
+  return "debug";
+}
+
 export interface InterceptOptions {
   maxFileBytes?: number;
   maxRetries?: number;

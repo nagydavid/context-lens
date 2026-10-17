@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
+import { JUDGE_SCHEMA } from "../core/judge.js";
 import { buildE2eFixture } from "../opencode/e2e-fixture.js";
 import { createMcpServer, serveStdio } from "./mcp-server.js";
 
@@ -91,6 +92,25 @@ describe("MCP context_lens_read", () => {
     strictEqual(fallback.isError, false); ok(fallback.content[0].text.includes("fallback: subagent-error")); ok(fallback.content[0].text.includes("00001|")); ok(logs.some((line) => line.includes("warn") && line.includes("subagent-error")));
     const childRunner = new FakeSubagentRunner({ text: answer }); const child = server(item.dir, childRunner, { env: { CONTEXT_LENS_CHILD: "1" } });
     const childResult = await call(child.mcp, { path: item.relative, question: "checksum" }); ok(childResult.content[0].text.includes("child process; not condensed")); strictEqual(childRunner.calls.length, 0);
+  });
+
+  it("renders judge outcomes and logs judge errors as warnings", async () => {
+    for (const [judgeResult, expected, level, intercepted] of [
+      [{ structured: { verdict: "sufficient" } }, "judge=sufficient", "info", true],
+      [{ structured: { verdict: "insufficient", reason: "missing context" } }, "judge-rejected", "warn", false],
+      [{ text: "not JSON" }, "judge=error", "warn", true],
+    ] as const) {
+      const item = project(`judge-${expected}`);
+      const logs: string[] = [];
+      const runner = new FakeSubagentRunner((request) => request.schema === JUDGE_SCHEMA ? judgeResult : { text: answer });
+      const test = server(item.dir, runner, { judge: { mode: "always" }, stderr: (line) => logs.push(line) });
+      const result = await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
+      strictEqual(result.content[0].text.includes("[context-lens]"), true);
+      strictEqual(result.content[0].text.includes("--- lines"), intercepted);
+      if (!intercepted) ok(result.content[0].text.includes("fallback: judge-rejected"));
+      ok(logs.some((line) => line.includes(level) && line.includes(expected)));
+      strictEqual(runner.calls.filter((request) => request.schema === JUDGE_SCHEMA).length, 1);
+    }
   });
 
   it("returns JSON-RPC errors and preserves string ids", async () => {

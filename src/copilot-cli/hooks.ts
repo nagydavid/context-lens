@@ -3,8 +3,10 @@ import { isAbsolute, relative, resolve } from "node:path";
 import {
   ModelSelector,
   ReadInterceptor,
+  eventLogLevel,
   type ConfigOptions,
   type InterceptionEvent,
+  type JudgeOptions,
   type SubagentRunner,
 } from "../core/index.js";
 import { renderInterceptionResult } from "../opencode/render.js";
@@ -31,6 +33,7 @@ export interface CopilotHooksOptions {
   maxFileBytes?: number;
   maxRetries?: number;
   retryDelayMs?: number;
+  judge?: JudgeOptions;
   configOptions?: Pick<ConfigOptions, "homeDir" | "env">;
   env?: NodeJS.ProcessEnv;
   logSink?: (line: string, record: object) => void;
@@ -44,11 +47,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function describeEvent(event: InterceptionEvent): string {
+  const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
+  const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
   if (event.intercepted) {
-    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}, ${Math.round(event.elapsedMs ?? 0)}ms)`;
+    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
   }
   if (event.fallbackReason) {
-    return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}`;
+    return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
   }
   return `passthrough ${event.filePath} (${event.lineCount} lines)`;
 }
@@ -125,8 +130,9 @@ export function createCopilotHooks(
         maxFileBytes: options.maxFileBytes,
         maxRetries: options.maxRetries,
         retryDelayMs: options.retryDelayMs,
+        judge: options.judge,
         logger: (event) => log(
-          event.intercepted ? "info" : event.fallbackReason ? "warn" : "debug",
+          eventLogLevel(event),
           describeEvent(event),
           { ...event },
         ),
