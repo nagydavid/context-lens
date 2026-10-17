@@ -176,7 +176,62 @@ An authenticated Copilot CLI is required for the opt-in live harness:
 npm run build && CONTEXT_LENS_E2E=1 node scripts/e2e-copilot.mjs
 ```
 
-It runs the happy, pass-through, MCP, and bogus-model scenarios against copilot 1.0.98 in isolated temporary projects and prints PASS or FAIL for each scenario (a failing scenario is retried once). Each run uses a throwaway `COPILOT_HOME` that holds only copies of `~/.copilot/config.json` and `settings.json` (the latter carries the `experimental` flag that enables extensions), so user-level hooks, MCP servers and instructions do not apply; set `CONTEXT_LENS_E2E_SHARED_HOME=1` to use the real `~/.copilot` instead. Without the gate, it prints `SKIP copilot e2e (set CONTEXT_LENS_E2E=1)` and exits 0.
+It runs the happy, pass-through, MCP, bogus-model, large, cache-repeat, and judge scenarios (select one with `--scenario <name|all>`) against copilot 1.0.98 in isolated temporary projects and prints PASS or FAIL for each scenario (a failing scenario is retried once). Each run uses a throwaway `COPILOT_HOME` that holds only copies of `~/.copilot/config.json` and `settings.json` (the latter carries the `experimental` flag that enables extensions), so user-level hooks, MCP servers and instructions do not apply; set `CONTEXT_LENS_E2E_SHARED_HOME=1` to use the real `~/.copilot` instead. Without the gate, it prints `SKIP copilot e2e (set CONTEXT_LENS_E2E=1)` and exits 0.
+
+## Tuning
+
+Tuning lives in an optional `tuning` block of the same config file that stores the model choice: `.context-lens/config.json` (project) or `$XDG_CONFIG_HOME/context-lens/config.json`, i.e. `~/.config/context-lens/config.json` (global).
+
+```json
+{
+  "version": 1,
+  "model": { "providerID": "anthropic", "modelID": "claude-haiku-4-5" },
+  "tuning": { "thresholdLines": 500, "chunkLines": 1000, "concurrency": 3, "judge": "low-confidence" }
+}
+```
+
+Saving a model choice preserves an existing `tuning` block.
+
+| Key | Env override | Default | Meaning |
+| --- | --- | --- | --- |
+| `thresholdLines` | `CONTEXT_LENS_THRESHOLD` | 350 | Reads above this many lines are condensed (integer >= 1) |
+| `timeoutMs` | `CONTEXT_LENS_TIMEOUT_MS` | 30000 | Deadline for the cheap-model work on one read (>= 1) |
+| `concurrency` | `CONTEXT_LENS_CONCURRENCY` | 1 | Max concurrent chunk subagents (>= 1) |
+| `chunkLines` | `CONTEXT_LENS_CHUNK_LINES` | 0 (off) | Window size for chunked reads |
+| `chunkOverlapLines` | `CONTEXT_LENS_CHUNK_OVERLAP` | `min(50, chunkLines - 1)` | Lines shared by neighbouring windows; must be smaller than `chunkLines` |
+| `judge` | `CONTEXT_LENS_JUDGE` | `off` | `off`, `low-confidence` or `always` |
+| `cacheMaxEntries` | `CONTEXT_LENS_CACHE` | 64 | Result cache size; `0` (or `off` in the env) disables it |
+
+Precedence per key: explicit adapter options, then environment, then project config, then global config, then the defaults. An invalid value logs a `context-lens: ignoring ...` warning and falls through to the next source (or the default); it never fails a read.
+
+### Parallel chunked reads
+
+With `chunkLines` set above 0, a file longer than `chunkLines` is split into overlapping windows that are answered by the cheap model concurrently, up to `concurrency`, under one shared deadline (`timeoutMs`). Excerpts keep absolute line numbers and are merged into one result. If any chunk fails, the full file is returned with a `chunk i/n: ...` detail. Chunking is off by default, and `concurrency` defaults to 1, so enable both deliberately.
+
+### Judge
+
+`judge` adds a second cheap-model pass that checks whether the excerpts answer the question. Modes: `off`, `low-confidence` (only when the first pass reports low confidence) and `always`. Only an explicit `insufficient` verdict returns the full file, with `fallbackReason=judge-rejected`. A judge error, timeout or invalid output keeps the excerpts and logs a warning.
+
+### Cache
+
+Results are cached in memory, per host process, keyed by the file's SHA-256, the question, the model, the prompt version, the chunk configuration and the judge mode. Only intercepted results are stored (fallbacks and results with a judge error are not). The cache is bounded to `cacheMaxEntries` entries and about 4 MB. `CONTEXT_LENS_CACHE=off` or `0` disables it. One-shot `copilot -p` and `opencode run` processes only reuse results within that single run.
+
+### Reading the logs
+
+```text
+intercepted <path> (<n> lines, confidence C, chunks=N, cacheHit=true, judge=<verdict>, <ms>ms)
+fallback <reason> for <path>: <detail>
+```
+
+`chunks=`, `cacheHit=true` and `judge=` appear only when they apply (`judge=error` marks a judge failure, followed by ` judge error: <detail>`). Judge errors log at warn level. Copilot writes these to `CONTEXT_LENS_LOG_FILE`.
+
+### Benchmark
+
+```bash
+npm run build && node scripts/bench.mjs [--iterations N] [--latency MS]
+```
+
+A hermetic benchmark with a fake runner (no host or network; defaults 20 iterations, 25 ms latency). It prints p50 and p95 for serial, parallel and cached chunked reads, plus `contextSaved`.
 
 ## Development
 
@@ -193,3 +248,4 @@ npm run type-check # tsc --noEmit
 - **Phase 1 - Core interceptor** (cheap model + excerpt extraction, path/size guards, model selection, transient retry/timeout). Complete.
 - **Phase 2 - OpenCode adapter** (v1 factory + v2 `{id, setup}` plugin, child-session runner, model config persistence, live host-contract e2e). Complete - Milestone M001.
 - **Phase 3 - Copilot CLI adapter** (extension view hook, model config + error matrix, `context_lens_read` MCP server, install path, opt-in live harness). Complete - Milestone M002.
+- **Phase 4 - Advanced features** (parallel chunked reads, optional judge, result cache, tuning config, benchmark; live harnesses with `--scenario` for OpenCode: happy/persist/fallback/large/cache/judge). Milestone M003. Defaults: chunking off, judge off, concurrency 1.
