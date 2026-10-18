@@ -7,9 +7,9 @@ ParaDoc provides harness-native, focused source context for coding agents. It pr
 ## Install
 
 ```bash
-npx -y @nagydavid/paradoc install            # OpenCode + Copilot CLI, user scope
-npx -y @nagydavid/paradoc install opencode   # or: copilot
-npx -y @nagydavid/paradoc install opencode --project   # ./.opencode instead of ~/.config/opencode
+npx -y @davidnagy/paradoc install            # OpenCode + Copilot CLI, user scope
+npx -y @davidnagy/paradoc install opencode   # or: copilot
+npx -y @davidnagy/paradoc install opencode --project   # ./.opencode instead of ~/.config/opencode
 ```
 
 Until the package is on npm, install straight from GitHub: `npx -y github:nagydavid/paradoc install`.
@@ -121,22 +121,22 @@ ParaDoc ships two plugin entry points because OpenCode changed its plugin contra
 - **OpenCode v2 (current hosts, e.g. 2.0.30):** auto-discovery loads a project shim whose **default export** is the v2 `{ id, setup }` plugin definition. Create `.opencode/plugins/paradoc.js` and register it in `opencode.jsonc`:
 
   ```jsonc
-  { "plugin": ["@nagydavid/paradoc"] }
+  { "plugin": ["@davidnagy/paradoc"] }
   ```
 
   ```js
   // .opencode/plugins/paradoc.js
-  export { ParaDocV2Plugin as default } from "@nagydavid/paradoc/opencode/plugin-v2";
+  export { ParaDocV2Plugin as default } from "@davidnagy/paradoc/opencode/plugin-v2";
   ```
 
 - **OpenCode 1.x (legacy factory):** add the plugin to `opencode.json`:
 
   ```json
-  { "plugin": ["@nagydavid/paradoc/plugin"] }
+  { "plugin": ["@davidnagy/paradoc/plugin"] }
   ```
 
   or re-export it from `.opencode/plugin/paradoc.ts`:
-  `export { ParaDocPlugin } from "@nagydavid/paradoc/plugin";`
+  `export { ParaDocPlugin } from "@davidnagy/paradoc/plugin";`
 
 The cheap model is chosen from `PARADOC_MODEL="provider/model"`, else `.paradoc/config.json` or `~/.config/paradoc/config.json`, else the host default.
 

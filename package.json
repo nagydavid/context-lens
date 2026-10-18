@@ -1,5 +1,5 @@
 {
-  "name": "@nagydavid/paradoc",
+  "name": "@davidnagy/paradoc",
   "version": "0.1.0",
   "description": "Cheap-model read interceptor for coding agents (Spotify Portal pattern)",
   "type": "module",
