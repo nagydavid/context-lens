@@ -1,9 +1,11 @@
 import { resolve } from "path";
 import { cacheKey, PROMPT_VERSION, sha256, type ResultCache } from "./cache.js";
 import { planChunks } from "./chunking.js";
+import { classifyDocument, type DocumentKind } from "./document.js";
 import { NetworkError, runChunkedRead, TimeoutError } from "./fanout.js";
 import { readTextFile, statFile } from "./file-guard.js";
-import type { FallbackReason, InterceptionResult, JudgeOutcome, ReadRequest } from "./models.js";
+import { createPdftotextExtractor, DEFAULT_PDF_MAX_CHARS, DEFAULT_PDF_TIMEOUT_MS, readPdfDocument, type PdfExtractor } from "./pdf.js";
+import type { AgentContext, FallbackReason, InterceptionResult, JudgeOutcome, ReadRequest } from "./models.js";
 import { buildJudgePrompt, JUDGE_SCHEMA, parseJudgeVerdict, shouldRunJudge, type JudgeOptions } from "./judge.js";
 import { normalizeRanges, parseSubagentResult, sliceExcerpts } from "./parse.js";
 import { buildSubagentPrompt } from "./prompts.js";
@@ -23,6 +25,11 @@ const DEFAULT_MIN_TOKENS = 1_000;
 const DEFAULT_THRESHOLD_TOKENS = 8_000;
 
 type Model = { providerID: string; modelID: string } | undefined;
+
+let defaultPdfExtractor: PdfExtractor | undefined;
+function getDefaultPdfExtractor(): PdfExtractor {
+  return defaultPdfExtractor ??= createPdftotextExtractor();
+}
 
 // ponytail: chars/4 is a lightweight estimate, not a tokenizer; swap one in only if the thresholds need precision.
 export function estimateTokens(text: string): number {
@@ -70,8 +77,27 @@ export function eventLogLevel(event: InterceptionEvent): "info" | "warn" | "debu
   return "debug";
 }
 
+/** Already-fetched content to condense; `label` stands in for the file path in events, results and prompts. */
+export interface ContentReadRequest {
+  label: string;
+  content: string;
+  documentKind: DocumentKind;
+  question?: string;
+  agentContext: AgentContext;
+}
+
+type ReadOutcome =
+  | { ok: true; content: string }
+  | { ok: false; reason: FallbackReason; detail?: string; error: string; size?: number };
+
 export interface InterceptOptions {
   maxFileBytes?: number;
+  /** Override the pdftotext-based PDF extractor. */
+  pdfExtractor?: PdfExtractor;
+  /** Maximum time allowed for PDF text extraction. */
+  pdfTimeoutMs?: number;
+  /** Maximum extracted PDF text length. */
+  pdfMaxChars?: number;
   maxRetries?: number;
   retryDelayMs?: number;
   runner?: SubagentRunner;
@@ -115,6 +141,13 @@ export class ReadInterceptor {
     this.counters.bypassed++;
   }
 
+  /** Records and logs a failure that happened before interception (e.g. a web fetch) through the same stats and logger. */
+  reportFailure(label: string, reason: FallbackReason, detail: string): void {
+    const event: InterceptionEvent = { filePath: label, lineCount: 0, intercepted: false, fallbackReason: reason, detail };
+    this.record(event);
+    try { this.options.logger?.(event); } catch { /* observability is non-fatal */ }
+  }
+
   private record(event: InterceptionEvent): void {
     const c = this.counters;
     if (event.intercepted) {
@@ -131,7 +164,36 @@ export class ReadInterceptor {
   }
 
   async intercept(request: ReadRequest): Promise<InterceptionResult> {
-    const { filePath, agentContext, projectRoot } = request;
+    const { filePath, projectRoot } = request;
+    const documentKind = classifyDocument(filePath);
+    return this.interceptShared({ label: filePath, documentKind, question: request.question, agentContext: request.agentContext, startLine: request.startLine, endLine: request.endLine }, () => {
+      const resolvedPath = this.resolvePath(filePath, projectRoot);
+      if (documentKind === "pdf-text") {
+        return readPdfDocument(resolvedPath, {
+          extractor: this.options.pdfExtractor ?? getDefaultPdfExtractor(),
+          maxFileBytes: this.options.maxFileBytes,
+          timeoutMs: this.options.pdfTimeoutMs ?? DEFAULT_PDF_TIMEOUT_MS,
+          maxChars: this.options.pdfMaxChars ?? DEFAULT_PDF_MAX_CHARS,
+        });
+      }
+      const stat = statFile(resolvedPath, this.options.maxFileBytes);
+      return stat.ok ? readTextFile(resolvedPath) : stat;
+    });
+  }
+
+  /** Condense already-fetched content (e.g. a web page) through the same pipeline as a file read. */
+  async interceptContent(request: ContentReadRequest): Promise<InterceptionResult> {
+    return this.interceptShared(
+      { label: request.label, documentKind: request.documentKind, question: request.question, agentContext: request.agentContext },
+      () => ({ ok: true as const, content: request.content }),
+    );
+  }
+
+  private async interceptShared(
+    request: { label: string; documentKind: DocumentKind; question?: string; agentContext: AgentContext; startLine?: number; endLine?: number },
+    load: () => ReadOutcome | Promise<ReadOutcome>,
+  ): Promise<InterceptionResult> {
+    const { label: filePath, agentContext, documentKind } = request;
     let lineCount = 0;
     let event: InterceptionEvent = { filePath, lineCount, intercepted: false };
     let modelResolved = false;
@@ -139,9 +201,7 @@ export class ReadInterceptor {
     let modelResolutionDetail: string | undefined;
 
     try {
-      const resolvedPath = this.resolvePath(filePath, projectRoot);
-      const stat = statFile(resolvedPath, this.options.maxFileBytes);
-      const read = stat.ok ? readTextFile(resolvedPath) : stat;
+      const read = await load();
       if (!read.ok) {
         event = { filePath, lineCount: 0, intercepted: false, fallbackReason: read.reason, detail: read.detail, ...(read.size !== undefined ? { fileBytes: read.size } : {}) };
         return { filePath, fullLineCount: 0, wasIntercepted: false, excerpts: [], summary: "", totalLinesReturned: 0, contextSaved: 0, error: read.error, fallback: { reason: read.reason, detail: read.detail } };
@@ -213,7 +273,8 @@ export class ReadInterceptor {
         let hit: InterceptionResult | undefined;
         try {
           key = cacheKey({
-            contentSha256: sha256(fileContent), question: resolvedQuestion.question, model, promptVersion: PROMPT_VERSION,
+            contentSha256: sha256(fileContent), question: resolvedQuestion.question, model,
+            promptVersion: documentKind === "source" ? PROMPT_VERSION : `${PROMPT_VERSION}:${documentKind}`,
             chunkLines: chunked ? this.options.chunkLines : 0, chunkOverlapLines: chunked ? (this.options.chunkOverlapLines ?? 0) : 0,
             judgeMode: this.options.judge?.mode ?? "off",
           });
@@ -231,8 +292,8 @@ export class ReadInterceptor {
       const setEvent = (next: InterceptionEvent) => { event = next; };
       const usage = { tokens: 0 };
       const compute = (): Promise<InterceptionResult> => chunked
-        ? this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent, usage })
-        : this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, commonMetadata, fullFileResult, timeoutMs, setEvent, usage });
+        ? this.interceptChunks({ filePath, fileContent, lines, windows, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, documentKind, commonMetadata, fullFileResult, timeoutMs, setEvent, usage })
+        : this.interceptSingle({ filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, agentContext, documentKind, commonMetadata, fullFileResult, timeoutMs, setEvent, usage });
       let result: InterceptionResult;
       if (cache && key && !this.inflight.has(key)) {
         const pending = compute();
@@ -268,7 +329,7 @@ export class ReadInterceptor {
     const outcome = await runChunkedRead({
       lines, windows,
       buildPrompt: (window) => {
-        const prompt = buildSubagentPrompt({ filePath, fileContent, question: resolvedQuestion.question, questionSource: resolvedQuestion.source, agentContext: args.agentContext, window });
+        const prompt = buildSubagentPrompt({ filePath, fileContent, question: resolvedQuestion.question, questionSource: resolvedQuestion.source, agentContext: args.agentContext, documentKind: args.documentKind, window });
         args.usage.tokens += estimateTokens(prompt); // ponytail: chunk retries not counted
         return prompt;
       },
@@ -291,7 +352,7 @@ export class ReadInterceptor {
 
   private async interceptSingle(args: InterceptArgs): Promise<InterceptionResult> {
     const { filePath, fileContent, lines, model, modelSource, modelResolutionDetail, resolvedQuestion, commonMetadata, fullFileResult, timeoutMs, setEvent } = args;
-    const prompt = buildSubagentPrompt({ filePath, fileContent, question: resolvedQuestion.question, questionSource: resolvedQuestion.source, agentContext: args.agentContext });
+    const prompt = buildSubagentPrompt({ filePath, fileContent, question: resolvedQuestion.question, questionSource: resolvedQuestion.source, agentContext: args.agentContext, documentKind: args.documentKind });
     const startedAt = performance.now();
     const state = { attempts: 0 };
     const attempts = () => state.attempts > 1 ? { attempts: state.attempts } : {};
@@ -408,6 +469,7 @@ interface InterceptArgs {
   modelResolutionDetail?: string;
   resolvedQuestion: ReturnType<typeof resolveQuestion>;
   agentContext: ReadRequest["agentContext"];
+  documentKind: DocumentKind;
   commonMetadata: { question: string; questionSource: "explicit" | "inferred" };
   fullFileResult: (reason?: FallbackReason, detail?: string, metadata?: Partial<InterceptionResult>) => InterceptionResult;
   timeoutMs: number;

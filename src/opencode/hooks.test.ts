@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
+import type { PdfExtractor } from "../core/pdf.js";
 import { JUDGE_SCHEMA } from "../core/judge.js";
 import { ConcurrencyLimitedRunner } from "../core/subagent.js";
 import { createParaDocHooks } from "./hooks.js";
@@ -77,6 +78,70 @@ describe("createParaDocHooks", () => {
     await hooks["tool.execute.after"](call("read", { path: largePath }), out);
     ok(out.output.includes("lines 10-12"));
     strictEqual(runner.calls.length, 1);
+  });
+
+  it("intercepts PDFs, preserves malformed native output, and bypasses PDF ranges", async () => {
+    const pdfPath = join(tmp, "report.pdf");
+    writeFileSync(pdfPath, "%PDF-1.4\nplaceholder");
+    const extracted: PdfExtractor = async () => ({ ok: true, pages: 1, text: ["--- page 1 ---", ...Array.from({ length: 400 }, (_, i) => `PDF line ${i + 1}`)].join("\n") });
+    const success = setup({
+      pdfExtractor: extracted,
+      runner: new FakeSubagentRunner({ structured: { excerpts: [{ startLine: 1, endLine: 2, reason: "page marker" }], summary: "page one", confidence: 4 } }),
+    });
+    const output = mkOutput(pdfPath);
+    await success.hooks["tool.execute.after"](call("read", { filePath: pdfPath }), output);
+    ok(output.output.includes("--- page 1 ---"));
+
+    const logs: Array<{ body: { level: string; extra?: Record<string, unknown> } }> = [];
+    const malformed: PdfExtractor = async () => ({ ok: false, reason: "pdf-malformed", error: "pdf text unavailable", detail: "bad xref" });
+    const fallback = setup({ pdfExtractor: malformed, client: { ...noopClient, app: { log: async (entry: (typeof logs)[number]) => { logs.push(entry); } } } as ParaDocClient });
+    const unchanged = mkOutput(pdfPath);
+    const original = unchanged.output;
+    await fallback.hooks["tool.execute.after"](call("read", { filePath: pdfPath }), unchanged);
+    await tick();
+    strictEqual(unchanged.output, original);
+    ok(logs.some((entry) => entry.body.level === "warn" && entry.body.extra?.fallbackReason === "pdf-malformed"));
+
+    const ranged = setup({ pdfExtractor: extracted });
+    const rangeOutput = mkOutput(pdfPath);
+    const rangeOriginal = rangeOutput.output;
+    await ranged.hooks["tool.execute.after"](call("read", { filePath: pdfPath, offset: 1, limit: 2 }), rangeOutput);
+    strictEqual(rangeOutput.output, rangeOriginal);
+    strictEqual(ranged.runner.calls.length, 0);
+  });
+
+  it("condenses large Markdown and text documents while preserving native pass-throughs", async () => {
+    const readmePath = join(tmp, "README.md");
+    const notesPath = join(tmp, "notes.txt");
+    const smallReadmePath = join(tmp, "small-README.md");
+    writeFileSync(readmePath, Array.from({ length: 400 }, (_, i) => `# Section ${i + 1}\nParagraph ${i + 1}`).join("\n"));
+    writeFileSync(notesPath, Array.from({ length: 400 }, (_, i) => `note ${i + 1}: this documentation paragraph contains enough prose to exceed the token floor.`).join("\n"));
+    writeFileSync(smallReadmePath, "# Small\nOnly a few lines\n");
+
+    for (const [path, args] of [[readmePath, { filePath: readmePath }], [notesPath, { filePath: notesPath }], [readmePath, { path: readmePath }]] as const) {
+      const { hooks, runner } = setup();
+      const out = mkOutput(path);
+      await hooks["tool.execute.after"](call("read", args), out);
+      ok(out.output.includes("--- lines 10-12"), out.output);
+      ok(out.output.includes("00010|"));
+      ok(runner.calls[0].prompt.includes("inline documentation file"));
+    }
+
+    for (const args of [{ offset: 1 }, { limit: 20 }]) {
+      const { hooks, runner } = setup();
+      const out = mkOutput(readmePath);
+      const original = out.output;
+      await hooks["tool.execute.after"](call("read", { filePath: readmePath, ...args }), out);
+      strictEqual(out.output, original);
+      strictEqual(runner.calls.length, 0);
+    }
+
+    const { hooks, runner } = setup();
+    const small = mkOutput(smallReadmePath);
+    const original = small.output;
+    await hooks["tool.execute.after"](call("read", { filePath: smallReadmePath }), small);
+    strictEqual(small.output, original);
+    strictEqual(runner.calls.length, 0);
   });
 
   it("(b) leaves small files untouched", async () => {

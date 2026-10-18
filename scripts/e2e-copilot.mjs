@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Opt-in live proof for the Copilot CLI extension. It intentionally retains the
 // temporary project on both PASS and FAIL so the host logs remain inspectable.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { access, copyFile, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -14,6 +14,7 @@ const entryModule = join(dist, "extension-entry.js");
 const fixtureModule = join(dist, "probe-fixture.js");
 const mcpEntryModule = join(dist, "mcp-entry.js");
 const expectedVersion = "1.0.98";
+const WEB_URL = process.env.PARADOC_E2E_WEB_URL || "https://nodejs.org/api/path.html";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -71,6 +72,47 @@ async function allLogText(logDir) {
   return chunks.join("\n");
 }
 
+const PDF_SYMBOL = "pdfLensChecksum";
+const PDF_PAGES = 6;
+const PDF_LINES_PER_PAGE = 50;
+
+/** Hand-written minimal text PDF (computed xref): PDF_PAGES pages of Helvetica prose with one unique symbol. */
+function buildE2ePdf() {
+  const objects = [];
+  const pageIds = Array.from({ length: PDF_PAGES }, (_, i) => 3 + i * 2);
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${PDF_PAGES} >>`;
+  const fontId = 3 + PDF_PAGES * 2;
+  for (let page = 0; page < PDF_PAGES; page++) {
+    const lines = Array.from({ length: PDF_LINES_PER_PAGE }, (_, i) => {
+      const n = page * PDF_LINES_PER_PAGE + i + 1;
+      return n === 217
+        ? `Line ${n}: the function ${PDF_SYMBOL} returns the magic number 4242 for every input.`
+        : `Line ${n}: filler prose for the live harness document, section ${page + 1}, entry ${i + 1}.`;
+    });
+    const stream = `BT /F1 10 Tf 12 TL 40 760 Td ${lines.map((l) => `(${l}) '`).join(" ")} ET`;
+    objects[pageIds[page]] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${pageIds[page] + 1} 0 R /Resources << /Font << /F1 ${fontId} 0 R >> >> >>`;
+    objects[pageIds[page] + 1] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+  }
+  objects[fontId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  let out = "%PDF-1.4\n";
+  const offsets = [];
+  for (let id = 1; id < objects.length; id++) {
+    offsets[id] = out.length;
+    out += `${id} 0 obj\n${objects[id]}\nendobj\n`;
+  }
+  const xref = out.length;
+  out += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let id = 1; id < objects.length; id++) out += `${String(offsets[id]).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return out;
+}
+
+function hasPdftotext() {
+  const probe = spawnSync("pdftotext", ["-v"], { stdio: "ignore" });
+  return !probe.error;
+}
+
 function interceptedRecords(records) {
   return records.filter((record) => typeof record?.message === "string" && record.message.startsWith("intercepted "));
 }
@@ -97,6 +139,18 @@ async function createIsolatedHome(temp) {
   const userSettings = join(homedir(), ".copilot", "settings.json");
   if (await exists(userSettings)) await copyFile(userSettings, join(home, "settings.json"));
   return home;
+}
+
+async function writeMcpConfig(temp, jsonlPath) {
+  const mcpConfigPath = join(temp, "mcp-config.json");
+  const mcpEnv = { PARADOC_LOG_FILE: jsonlPath };
+  if (process.env.PARADOC_MODEL) mcpEnv.PARADOC_MODEL = process.env.PARADOC_MODEL;
+  await writeFile(mcpConfigPath, JSON.stringify({
+    mcpServers: {
+      "paradoc-e2e": { type: "local", command: process.execPath, args: [mcpEntryModule], tools: ["*"], env: mcpEnv },
+    },
+  }), "utf8");
+  return ["--additional-mcp-config", `@${mcpConfigPath}`];
 }
 
 async function runScenario({
@@ -242,28 +296,40 @@ async function main() {
       name: "mcp",
       installExtension: false,
       prompt: "Call the paradoc_read MCP tool with path big.ts and question 'What does computeLensChecksum return?'. Do not use the view tool. Report the answer.",
-      extraArgs: async ({ temp, jsonlPath }) => {
-        const mcpConfigPath = join(temp, "mcp-config.json");
-        const mcpEnv = { PARADOC_LOG_FILE: jsonlPath };
-        if (process.env.PARADOC_MODEL) mcpEnv.PARADOC_MODEL = process.env.PARADOC_MODEL;
-        await writeFile(mcpConfigPath, JSON.stringify({
-          mcpServers: {
-            "paradoc-e2e": {
-              type: "local",
-              command: process.execPath,
-              args: [mcpEntryModule],
-              tools: ["*"],
-              env: mcpEnv,
-            },
-          },
-        }), "utf8");
-        return ["--additional-mcp-config", `@${mcpConfigPath}`];
-      },
+      extraArgs: ({ temp, jsonlPath }) => writeMcpConfig(temp, jsonlPath),
       check: async ({ result, transcript, logs, records, logSource, transcriptPath }) => {
         assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
         assert(findViewResult(`${transcript}\n${logs}`), "condensed MCP result with Confidence missing, or fixtureValue400 leaked; see transcript and debug logs");
         const intercepted = records.filter((record) => record?.message?.startsWith("intercepted") && Number.isFinite(record?.elapsedMs));
         assert(intercepted.length >= 1, `expected an intercepted MCP record, got ${intercepted.length} (${logSource})`);
+      },
+    },
+    {
+      name: "pdf",
+      installExtension: false,
+      skip: () => (hasPdftotext() ? undefined : "pdf (pdftotext not found)"),
+      extraFiles: { "report.pdf": buildE2ePdf() },
+      prompt: `Call the paradoc_read MCP tool with path report.pdf and question 'What does ${PDF_SYMBOL} return?'. Do not use any other tool. Report the answer.`,
+      extraArgs: ({ temp, jsonlPath }) => writeMcpConfig(temp, jsonlPath),
+      check: async ({ result, records, logSource, transcriptPath }) => {
+        assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
+        const pdfRecords = records.filter((record) => /\.pdf\b/.test(record?.message ?? "")
+          && (record.message.startsWith("intercepted ") || /^fallback pdf-/.test(record.message)));
+        assert(pdfRecords.length >= 1, `expected an intercepted or fallback pdf-* record for report.pdf, got none among ${records.length} records (${logSource})`);
+      },
+    },
+    {
+      name: "web",
+      installExtension: false,
+      skip: () => (process.env.PARADOC_E2E_WEB === "1" ? undefined : "web (set PARADOC_E2E_WEB=1)"),
+      prompt: `Call the paradoc_web_read MCP tool with url ${WEB_URL} and question 'What does path.join do?'. Do not use any other tool. Report the answer.`,
+      extraArgs: ({ temp, jsonlPath }) => writeMcpConfig(temp, jsonlPath),
+      check: async ({ result, records, logSource, transcriptPath }) => {
+        assert(result.code === 0, `copilot exited ${result.code}; see ${transcriptPath}`);
+        const host = new URL(WEB_URL).host;
+        const webRecords = records.filter((record) => typeof record?.message === "string" && record.message.includes(host)
+          && (record.message.startsWith("intercepted ") || record.message.startsWith("fallback ")));
+        assert(webRecords.length >= 1, `expected an intercepted/fallback record labelled with the masked URL (${host}), got none among ${records.length} records (${logSource})`);
       },
     },
     {
@@ -334,6 +400,11 @@ async function main() {
   const names = scenarios.map((scenario) => scenario.name);
   assert(scenarioFilter === "all" || names.includes(scenarioFilter), `unknown scenario "${scenarioFilter}"; valid: ${names.join(", ")}, all`);
   for (const scenario of scenarios.filter((entry) => scenarioFilter === "all" || entry.name === scenarioFilter)) {
+    const skipReason = scenario.skip?.();
+    if (skipReason) {
+      console.log(`SKIP ${skipReason}`);
+      continue;
+    }
     try {
       const { paths, logSource, concurrencyPinned } = await runScenarioWithRetry(scenario);
       console.log(`PASS ${scenario.name}\n${paths}\nlog-source=${logSource}${concurrencyPinned ? "\nconcurrencyPinned=true" : ""}`);

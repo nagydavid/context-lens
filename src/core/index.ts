@@ -1,5 +1,7 @@
 export { ReadInterceptor, eventLogLevel, interceptRead, estimateTokens } from "./interceptor.js";
-export type { InterceptOptions, InterceptionEvent, InterceptStats } from "./interceptor.js";
+export { classifyDocument } from "./document.js";
+export type { DocumentKind } from "./document.js";
+export type { ContentReadRequest, InterceptOptions, InterceptionEvent, InterceptStats } from "./interceptor.js";
 export { LruResultCache, PROMPT_VERSION, sha256, cacheKey } from "./cache.js";
 export type { ResultCache, CacheKeyInput } from "./cache.js";
 export type {
@@ -17,6 +19,14 @@ export {
   buildSubagentPrompt,
 } from "./prompts.js";
 export * from "./file-guard.js";
+export {
+  DEFAULT_PDF_MAX_CHARS,
+  DEFAULT_PDF_TIMEOUT_MS,
+  createPdftotextExtractor,
+  readPdfDocument,
+  normalizePdfText,
+} from "./pdf.js";
+export type { ExecFileLike, PdfExtraction, PdfExtractor } from "./pdf.js";
 export * from "./transient.js";
 export { resolveQuestion } from "./question.js";
 export {
@@ -75,3 +85,9 @@ export type {
 } from "./model-selector.js";
 export { DEFAULT_TUNING, loadTuning, tuningToInterceptorOptions } from "./tuning.js";
 export type { TuningOptions, TuningSettings, TuningSource } from "./tuning.js";
+export { parseWebUrl, isBlockedAddress, maskUrl } from "./url-guard.js";
+export { fetchWebDocument, DEFAULT_WEB_TIMEOUT_MS, DEFAULT_WEB_MAX_BYTES } from "./web-fetch.js";
+export type { WebTransport, WebTransportRequest, WebTransportResponse, WebFetchOptions, WebFetchResult } from "./web-fetch.js";
+export { htmlToText } from "./web-html.js";
+export { readWebDocument } from "./web-document.js";
+export type { WebReadResult } from "./web-document.js";

@@ -12,7 +12,7 @@ npx -y --package=@davidnagy/paradoc@latest paradoc install opencode   # or: copi
 npx -y --package=@davidnagy/paradoc@latest paradoc install opencode --project   # ./.opencode instead of ~/.config/opencode
 ```
 
-The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.1.2`; the manual setup below is only needed for custom layouts.
+The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). It also registers the `paradoc` MCP server (`paradoc_read`, `paradoc_web_read`) in `opencode.jsonc` (`mcp.servers.paradoc`) and `~/.copilot/mcp-config.json`; an existing `paradoc` entry is left untouched. Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.1.2`; the manual setup below is only needed for custom layouts.
 
 ## Product intent
 
@@ -103,8 +103,23 @@ Fallback reasons are observable and explicit: `no-runner`, `timeout`, `network-e
 - Intercept or guide oversized source reads before their full contents enter the agent context.
 - Provide bounded, deterministic tools for file discovery, line-ranged reads, search, metadata, and concise source selection.
 - Preserve normal small-file reads.
+- Markdown (`.md`, `.markdown`, `.mdx`), plain text (`.txt`, `.text`), reStructuredText (`.rst`), and AsciiDoc (`.adoc`) use the same native read path and size thresholds with a documentation-tuned prompt; small and ranged reads pass through unchanged.
+- PDFs (`.pdf`) are read through `pdftotext` (poppler-utils) when installed, with page markers, a 15s timeout, and a 1,000,000-char extracted-text cap. Install with `apt install poppler-utils` or `brew install poppler`.
+- PDF fallback reasons: `pdf-encrypted`, `pdf-malformed`, `pdf-no-text` (scanned or image-only PDF; OCR is out of scope), `pdf-too-large`, `extractor-unavailable` (install hint), `file-too-large`, and `timeout`. Each leaves the host's native read output unchanged.
+- Ranged MCP reads of a PDF use extracted-text line numbers.
+- For Copilot CLI, the `paradoc_read` MCP tool is the PDF path.
 - Validate paths, apply project-root boundaries, and return actionable errors.
 - Be observable: explain when a read was limited or redirected without exposing unrelated source.
+
+### Host surfaces
+
+| | OpenCode | Copilot CLI |
+|---|---|---|
+| Text docs (`.md`/`.txt`) | native `read` hook | `view` hook, plus `paradoc_read` |
+| PDF | native `read` hook via `pdftotext`, plus `paradoc_read` | `paradoc_read` over MCP (the `view` hook only when the host returns a success result) |
+| Web | `paradoc_web_read` over MCP | `paradoc_web_read` over MCP |
+
+`paradoc install` registers the MCP server on both hosts. Web reads are explicit and opt-in only: never automatic, and they do not replace host web tools.
 
 ## Non-goals
 
@@ -144,11 +159,21 @@ Identical repeat reads are served from the in-memory result cache with no model 
 
 Measure the effect on your own files with `npm run build && node scripts/bench-tokens.mjs [file ...]` (uses a fake runner: counts and token figures are estimates, not live latency).
 
+### MCP tools
+
+`paradoc_read` and `paradoc_web_read` are available over the stdio MCP server, which `paradoc install` writes into `opencode.jsonc` automatically. To configure it by hand, use the OpenCode v2 shape (servers live under `mcp.servers`):
+
+```json
+{"mcp":{"servers":{"paradoc":{"type":"local","command":["node","/abs/path/to/paradoc/dist/copilot-cli/mcp-entry.js"]}}}}
+```
+
+The opt-in live harness is `PARADOC_E2E=1 node scripts/e2e-opencode.mjs [--scenario <name>]`. The `pdf` scenario needs `pdftotext`; the `web` scenario needs network and `PARADOC_E2E_WEB=1`. Both print SKIP otherwise.
+
 Not done (document-only): a real tokenizer, persistent or semantic caching, and deriving questions from assistant turns - each adds dependencies or state disproportionate to the gain.
 
 ## Copilot CLI
 
-The Copilot CLI adapter provides two supported surfaces: an extension `onPostToolUse` view hook for automatic oversized-read interception, and the explicit `paradoc_read(path, question, start_line?, end_line?)` MCP tool. The MCP tool routes an explicit question through the same core interceptor; a `start_line` or `end_line` range is always returned raw and never condensed.
+The Copilot CLI adapter provides two supported surfaces: an extension `onPostToolUse` view hook for automatic oversized-read interception, and the explicit `paradoc_read(path, question, start_line?, end_line?)` and `paradoc_web_read(url, question, start_line?, end_line?)` MCP tools. The MCP tool routes an explicit question through the same core interceptor; a `start_line` or `end_line` range is always returned raw and never condensed.
 
 ### Extension (automatic view interception)
 
@@ -186,6 +211,17 @@ copilot --additional-mcp-config @mcp-config.json
 
 If the model, file, or parsing path fails, `paradoc_read` returns the full file rather than dropping context. Model choice follows `PARADOC_MODEL`, then project configuration, then global configuration.
 
+### Web documentation (`paradoc_web_read`)
+
+`paradoc_web_read(url, question, start_line?, end_line?)` fetches a documentation page, converts it to line-numbered text and condenses it through the same interceptor pipeline as `paradoc_read`. It is explicit and opt-in: it is never invoked automatically and does not replace the host's own web tools.
+
+- **Scope:** public `http(s)` URLs only. No authentication, cookies or crawling; only the one URL (plus redirects) is fetched.
+- **SSRF protection:** non-http(s) schemes, credentials in URLs, and loopback, private, link-local and reserved addresses (literal or resolved via DNS) are refused. Every redirect hop is re-validated and the connection is pinned to the validated address.
+- **Limits:** 15 s timeout, 2 MiB response (also bounded after decompression), 5 redirects, content types `text/html`, `application/xhtml+xml`, `text/plain` and `text/markdown`, and caps on converted lines and characters.
+- **Line numbers** refer to the converted text, not the page source. The header carries a short content hash (`sha`) so a changed page is detectable between calls. `start_line`/`end_line` return exact converted text and are never condensed.
+- **Failures are visible:** the tool returns an MCP error `paradoc: <error> (<reason>): <detail>` with reason `invalid-url`, `unsafe-url`, `timeout`, `fetch-failed`, `unsupported-content-type`, `content-too-large` or `too-many-redirects`. Query strings are masked in output and logs.
+- **Untrusted content:** every result carries an `Untrusted external web content from <url> (sha ...)` line, and the condensing prompt tells the model to treat the page as data, not instructions.
+
 ### Live harness
 
 An authenticated Copilot CLI is required for the opt-in live harness:
@@ -194,7 +230,7 @@ An authenticated Copilot CLI is required for the opt-in live harness:
 npm run build && PARADOC_E2E=1 node scripts/e2e-copilot.mjs
 ```
 
-It runs the happy, pass-through, MCP, bogus-model, large, cache-repeat, and judge scenarios (select one with `--scenario <name|all>`) against copilot 1.0.98 in isolated temporary projects and prints PASS or FAIL for each scenario (a failing scenario is retried once). Each run uses a throwaway `COPILOT_HOME` that holds only copies of `~/.copilot/config.json` and `settings.json` (the latter carries the `experimental` flag that enables extensions), so user-level hooks, MCP servers and instructions do not apply; set `PARADOC_E2E_SHARED_HOME=1` to use the real `~/.copilot` instead. Without the gate, it prints `SKIP copilot e2e (set PARADOC_E2E=1)` and exits 0.
+It runs the happy, pass-through, MCP, bogus-model, large, cache-repeat, judge, `pdf` and `web` scenarios (`pdf` needs `pdftotext`; `web` needs network and `PARADOC_E2E_WEB=1`; both SKIP otherwise; select one with `--scenario <name|all>`) against copilot 1.0.98 in isolated temporary projects and prints PASS or FAIL for each scenario (a failing scenario is retried once). Each run uses a throwaway `COPILOT_HOME` that holds only copies of `~/.copilot/config.json` and `settings.json` (the latter carries the `experimental` flag that enables extensions), so user-level hooks, MCP servers and instructions do not apply; set `PARADOC_E2E_SHARED_HOME=1` to use the real `~/.copilot` instead. Without the gate, it prints `SKIP copilot e2e (set PARADOC_E2E=1)` and exits 0.
 
 ## Tuning
 
@@ -267,3 +303,4 @@ npm run type-check # tsc --noEmit
 - **Phase 2 - OpenCode adapter** (v1 factory + v2 `{id, setup}` plugin, child-session runner, model config persistence, live host-contract e2e). Complete - Milestone M001.
 - **Phase 3 - Copilot CLI adapter** (extension view hook, model config + error matrix, `paradoc_read` MCP server, install path, opt-in live harness). Complete - Milestone M002.
 - **Phase 4 - Advanced features** (parallel chunked reads, optional judge, result cache, tuning config, benchmark; live harnesses with `--scenario` for OpenCode: happy/persist/fallback/large/cache/judge). Milestone M003. Defaults: chunking off, judge off, concurrency 1.
+- **Phase 5 - Web and document sources** (Markdown/plain-text condensation, `pdftotext` PDF extraction with fallbacks, `paradoc_web_read` with SSRF guard, installer MCP registration, cross-host parity tests). Milestone M005.

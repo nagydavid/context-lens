@@ -143,6 +143,25 @@ describe("ReadInterceptor result cache", () => {
     });
   });
 
+  it("separates source and document prompt cache entries", async () => {
+    await withFile(large, async (_filePath, directory) => {
+      const source = join(directory, "a.ts");
+      const document = join(directory, "a.md");
+      writeFileSync(source, large);
+      writeFileSync(document, large);
+      const runner = new FakeSubagentRunner(answer);
+      const interceptor = make(runner, { cache: new LruResultCache() });
+
+      await interceptor.intercept({ filePath: source, agentContext: {} });
+      const repeatedSource = await interceptor.intercept({ filePath: source, agentContext: {} });
+      const documentResult = await interceptor.intercept({ filePath: document, agentContext: {} });
+
+      strictEqual(repeatedSource.cacheHit, true);
+      strictEqual(documentResult.cacheHit, undefined);
+      strictEqual(runner.calls.length, 2);
+    });
+  });
+
   it("logs hits at info level with cacheHit", async () => {
     await withFile(large, async (filePath) => {
       const events: InterceptionEvent[] = [];

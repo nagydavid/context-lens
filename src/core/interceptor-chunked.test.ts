@@ -125,7 +125,7 @@ describe("ReadInterceptor chunked fan-out", () => {
         const result = await new ReadInterceptor({ runner, thresholdLines: 1, chunkLines: 1000 }).intercept({ filePath: shortPath, agentContext: {} });
         strictEqual(runner.calls.length, 1);
         strictEqual(result.chunks, undefined);
-        strictEqual(runner.calls[0].prompt, buildSubagentPrompt({ filePath: shortPath, fileContent: shortContent, question: "What is the main purpose of this file and what are its key exports, types and entry points?", questionSource: "inferred", agentContext: {} }));
+        strictEqual(runner.calls[0].prompt, buildSubagentPrompt({ filePath: shortPath, fileContent: shortContent, question: "What is the main purpose of this file and what are its key exports, types and entry points?", questionSource: "inferred", agentContext: {}, documentKind: "text-document" }));
       } finally { rmSync(shortPath, { force: true }); }
       const unsetRunner = new TrackingRunner(() => ({ structured: { excerpts: [{ startLine: 1, endLine: 2 }], summary: "unset", confidence: 4 } }));
       const unset = await new ReadInterceptor({ runner: unsetRunner }).intercept({ filePath, agentContext: {} });

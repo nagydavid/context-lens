@@ -107,6 +107,7 @@ describe("compiled MCP stdio entry", () => {
   it("(2) lists paradoc_read", { timeout: 15_000 }, async () => {
     const listed = await client.request("tools/list");
     ok(listed.result.tools.some((tool: { name: string }) => tool.name === "paradoc_read"));
+    ok(listed.result.tools.some((tool: { name: string }) => tool.name === "paradoc_web_read"));
   });
 
   it("(3) condenses a big explicit question through the child runner", { timeout: 15_000 }, async () => {

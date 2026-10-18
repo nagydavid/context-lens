@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
+import type { PdfExtractor } from "../core/pdf.js";
 import { JUDGE_SCHEMA } from "../core/judge.js";
 import { createCopilotHooks } from "./hooks.js";
 import { buildE2eFixture, buildLargeE2eFixture, buildViewInput, E2E_FIXTURE_SYMBOL, E2E_LARGE_FIXTURE_LINES, E2E_LARGE_FIXTURE_SYMBOL } from "./probe-fixture.js";
@@ -211,6 +212,42 @@ describe("createCopilotHooks", () => {
     writeFileSync(editedPath, buildE2eFixture() + "\n// edited\n");
     await hooks.onPostToolUse(view(editedPath));
     ok(runner.calls.length > callsBefore);
+  });
+
+  it("condenses PDF views and preserves encrypted-PDF native output", async () => {
+    const pdfPath = join(tmp, "report.pdf");
+    writeFileSync(pdfPath, "%PDF-1.4\nplaceholder");
+    const extracted: PdfExtractor = async () => ({ ok: true, pages: 1, text: ["--- page 1 ---", ...Array.from({ length: 400 }, (_, index) => `PDF line ${index + 1}`)].join("\n") });
+    const success = setup({
+      pdfExtractor: extracted,
+      runner: new FakeSubagentRunner({ structured: { excerpts: [{ startLine: 1, endLine: 2, reason: "page marker" }], summary: "page one", confidence: 4 } }),
+    });
+    const result = await success.hooks.onPostToolUse(view(pdfPath));
+    ok(result?.modifiedResult?.textResultForLlm.includes("--- page 1 ---"));
+
+    const encrypted: PdfExtractor = async () => ({ ok: false, reason: "pdf-encrypted", error: "pdf text unavailable", detail: "locked" });
+    const fallback = setup({ pdfExtractor: encrypted });
+    strictEqual(await fallback.hooks.onPostToolUse(view(pdfPath)), undefined);
+    ok(fallback.logs.some(({ record }) => record.level === "warn" && record.fallbackReason === "pdf-encrypted"));
+  });
+
+  it("condenses large Markdown and text views while preserving ranged views", async () => {
+    const readmePath = join(tmp, "README.md");
+    const notesPath = join(tmp, "notes.txt");
+    const documentBody = Array.from({ length: 400 }, (_, index) => `Section ${index + 1}: documentation detail`).join("\n");
+    writeFileSync(readmePath, documentBody);
+    writeFileSync(notesPath, documentBody);
+
+    for (const path of [notesPath, readmePath]) {
+      const { hooks, runner } = setup();
+      const result = await hooks.onPostToolUse(view(path));
+      ok(result?.modifiedResult?.textResultForLlm.includes("--- lines 232-238"));
+      ok(runner.calls[0].prompt.includes("inline documentation file"));
+    }
+
+    const { hooks, runner } = setup();
+    strictEqual(await hooks.onPostToolUse(view(notesPath, { toolArgs: { path: notesPath, view_range: [1, 20] } })), undefined);
+    strictEqual(runner.calls.length, 0);
   });
 
   it("(p) uses an injected cache", async () => {

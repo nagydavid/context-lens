@@ -10,6 +10,7 @@ import {
   type ConfigOptions,
   type InterceptionEvent,
   type JudgeOptions,
+  type PdfExtractor,
   type ResultCache,
   type SubagentRunner,
   type TuningSettings,
@@ -41,6 +42,8 @@ export interface CopilotHooksOptions {
   maxRetries?: number;
   retryDelayMs?: number;
   judge?: JudgeOptions;
+  /** Test seam: replaces native pdftotext extraction. */
+  pdfExtractor?: PdfExtractor;
   configOptions?: Pick<ConfigOptions, "homeDir" | "env" | "projectRoot">;
   env?: NodeJS.ProcessEnv;
   logSink?: (line: string, record: object) => void;
@@ -156,6 +159,7 @@ export function createCopilotHooks(
         maxRetries: options.maxRetries,
         retryDelayMs: options.retryDelayMs,
         ...(options.judge ? { judge: options.judge } : {}),
+        ...(options.pdfExtractor ? { pdfExtractor: options.pdfExtractor } : {}),
         logger: (event) => log(
           eventLogLevel(event),
           describeEvent(event),

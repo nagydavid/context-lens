@@ -35,7 +35,18 @@ export type FallbackReason =
   | "binary-file"
   | "unreadable"
   | "network-error"
-  | "judge-rejected";
+  | "judge-rejected"
+  | "pdf-encrypted"
+  | "pdf-malformed"
+  | "pdf-no-text"
+  | "pdf-too-large"
+  | "extractor-unavailable"
+  | "invalid-url"
+  | "unsafe-url"
+  | "fetch-failed"
+  | "unsupported-content-type"
+  | "content-too-large"
+  | "too-many-redirects";
 
 export interface JudgeOutcome {
   verdict?: "sufficient" | "insufficient";

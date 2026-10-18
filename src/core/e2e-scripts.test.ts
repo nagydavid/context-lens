@@ -45,6 +45,16 @@ describe("live harness scripts (hermetic guard)", () => {
     });
   }
 
+  for (const { script } of harnesses) {
+    for (const scenario of ["pdf", "web"]) {
+      it(`${script} --scenario ${scenario} skips without the gate`, { timeout: TIMEOUT }, () => {
+        const result = run([script, "--scenario", scenario]);
+        strictEqual(result.status, 0, result.stderr);
+        ok(result.stdout.includes("SKIP"), result.stdout);
+      });
+    }
+  }
+
   it("scripts/bench.mjs runs hermetically", { timeout: TIMEOUT }, () => {
     const result = run(["scripts/bench.mjs", "--iterations", "1", "--latency", "0"]);
     strictEqual(result.status, 0, result.stderr);

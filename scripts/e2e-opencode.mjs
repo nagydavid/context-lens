@@ -2,7 +2,7 @@
 // Uses a temporary XDG_CONFIG_HOME so user plugins/config are isolated; XDG_DATA_HOME
 // remains untouched because it contains OpenCode provider authentication.
 //
-// Scenarios (--scenario happy|persist|fallback|large|cache|judge|all, gated by PARADOC_E2E=1):
+// Scenarios (--scenario happy|persist|fallback|large|cache|pdf|web|judge|all, gated by PARADOC_E2E=1):
 //   happy    condensed excerpts + confidence, interception < 5s (R001, R003, R005)
 //   persist  two separate `opencode run` processes (= two plugin instances) with a
 //            pre-seeded project config; both must resolve modelSource "project" and the
@@ -15,6 +15,10 @@
 //   large    a 3000-line fixture with chunk fan-out enabled through the v2 env stopgap.
 //   cache    one run that reads the fixture twice; the second `intercepted` log must carry
 //            cacheHit=true and a tiny elapsed time (in-memory result cache, one process).
+//   pdf      a native `read` of a generated text PDF; needs pdftotext on PATH (SKIP otherwise).
+//            Passes on an `intercepted` log for the .pdf or a pdf-* fallback warn log.
+//   web      the paradoc MCP server registered under mcp.servers (D020 v2 shape) and a
+//            `paradoc_web_read` call; needs network, so SKIP unless PARADOC_E2E_WEB=1.
 //   judge    PARADOC_JUDGE=always; the log must carry judge=<verdict>, or the read must
 //            fall back with judge-rejected. A judge error is non-fatal (warn, excerpts kept).
 import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -22,7 +26,7 @@ import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
 const dist = join(root, "dist", "opencode");
@@ -32,6 +36,49 @@ let E2E_FIXTURE_LINES, E2E_FIXTURE_SYMBOL, E2E_LARGE_FIXTURE_LINES, E2E_LARGE_FI
 const scenario = process.argv.includes("--scenario")
   ? process.argv[process.argv.indexOf("--scenario") + 1]
   : "all";
+
+const PDF_SYMBOL = "pdfLensChecksum";
+const PDF_PAGES = 6;
+const PDF_LINES_PER_PAGE = 50;
+
+/** Hand-written minimal text PDF (computed xref): PDF_PAGES pages of Helvetica prose with one unique symbol. */
+function buildE2ePdf() {
+  const objects = [];
+  const pageIds = Array.from({ length: PDF_PAGES }, (_, i) => 3 + i * 2);
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${PDF_PAGES} >>`;
+  const fontId = 3 + PDF_PAGES * 2;
+  for (let page = 0; page < PDF_PAGES; page++) {
+    const lines = Array.from({ length: PDF_LINES_PER_PAGE }, (_, i) => {
+      const n = page * PDF_LINES_PER_PAGE + i + 1;
+      return n === 217
+        ? `Line ${n}: the function ${PDF_SYMBOL} returns the magic number 4242 for every input.`
+        : `Line ${n}: filler prose for the live harness document, section ${page + 1}, entry ${i + 1}.`;
+    });
+    const stream = `BT /F1 10 Tf 12 TL 40 760 Td ${lines.map((l) => `(${l}) '`).join(" ")} ET`;
+    objects[pageIds[page]] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${pageIds[page] + 1} 0 R /Resources << /Font << /F1 ${fontId} 0 R >> >> >>`;
+    objects[pageIds[page] + 1] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+  }
+  objects[fontId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+  let out = "%PDF-1.4\n";
+  const offsets = [];
+  for (let id = 1; id < objects.length; id++) {
+    offsets[id] = out.length;
+    out += `${id} 0 obj\n${objects[id]}\nendobj\n`;
+  }
+  const xref = out.length;
+  out += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let id = 1; id < objects.length; id++) out += `${String(offsets[id]).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return out;
+}
+
+function hasPdftotext() {
+  const probe = spawnSync("pdftotext", ["-v"], { stdio: "ignore" });
+  return !probe.error;
+}
+
+const WEB_URL = process.env.PARADOC_E2E_WEB_URL || "https://nodejs.org/api/path.html";
 
 function skip(message) {
   console.log(`SKIP: ${message}`);
@@ -276,6 +323,42 @@ async function scenarioCache(ctx, temp, configHome) {
   return { scenario: "cache", ok: true, cacheHit: true, firstElapsedMs, cachedElapsedMs, intercepts: intercepts.length };
 }
 
+async function scenarioPdf(ctx, temp, configHome) {
+  const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
+  const pdfPath = join(temp, "report.pdf");
+  await writeFile(pdfPath, buildE2ePdf(), "utf8");
+  const prompt = `Use the read tool to read ${pdfPath} in full (no offset or limit), then tell me what ${PDF_SYMBOL} returns.`;
+  const r = await opencodeRun(ctx, temp, configHome, fixturePath, PDF_SYMBOL, {}, prompt);
+  const log = r.logs.find((l) => (l.level === "info" && /^intercepted .*\.pdf\b/.test(l.message))
+    || (l.level === "warn" && /^fallback pdf-\S+ for .*\.pdf\b/.test(l.message)));
+  assertion(log, `missing intercepted or fallback pdf-* log for report.pdf:\n${hostDiagnostics(r.transcript)}`);
+  return { scenario: "pdf", ok: true, outcome: log.level === "info" ? "intercepted" : "fallback", logLine: log.message };
+}
+
+async function scenarioWeb(ctx, temp, configHome) {
+  const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
+  const jsonlPath = join(temp, "paradoc-mcp.jsonl");
+  // D020 (OpenCode v2): servers live under mcp.servers, command is an array, env key is `environment`.
+  const mcpEntry = join(root, "dist", "copilot-cli", "mcp-entry.js");
+  const configPath = join(temp, "opencode.jsonc");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.mcp = { servers: { paradoc: { type: "local", command: [process.execPath, mcpEntry], environment: { PARADOC_LOG_FILE: jsonlPath } } } };
+  await writeFile(configPath, JSON.stringify(config) + "\n");
+  const prompt = `Use the paradoc_web_read tool with url ${WEB_URL} and question "What does path.join do?". Do not use any other tool. Then answer the question.`;
+  const r = await opencodeRun(ctx, temp, configHome, fixturePath, "path.join", {}, prompt);
+  let records = [];
+  try {
+    records = (await readFile(jsonlPath, "utf8")).split("\n").map((line) => {
+      try { return JSON.parse(line); } catch { return undefined; }
+    }).filter(Boolean);
+  } catch { /* log never written: reported by the assertion below */ }
+  const host = new URL(WEB_URL).host;
+  const hit = records.find((rec) => typeof rec?.message === "string" && rec.message.includes(host)
+    && (rec.message.startsWith("intercepted ") || rec.message.startsWith("fallback ")));
+  assertion(hit, `no intercepted/fallback record labelled ${host} in ${jsonlPath} (${records.length} records):\n${hostDiagnostics(r.transcript)}`);
+  return { scenario: "web", ok: true, outcome: hit.message.startsWith("intercepted ") ? "intercepted" : "fallback", logLine: hit.message };
+}
+
 async function scenarioJudge(ctx, temp, configHome) {
   const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
   const r = await opencodeRun(ctx, temp, configHome, fixturePath, E2E_FIXTURE_SYMBOL, { PARADOC_JUDGE: "always" });
@@ -306,10 +389,15 @@ async function main() {
   const binaryProbe = await run(binary, ["--version"], { cwd: root, env: process.env });
   if (binaryProbe.code !== 0) skip("opencode binary not found");
   const scenarios = { happy: scenarioHappy, persist: scenarioPersist, fallback: scenarioFallback, large: scenarioLarge,
-    cache: scenarioCache, judge: scenarioJudge };
+    cache: scenarioCache, pdf: scenarioPdf, web: scenarioWeb, judge: scenarioJudge };
   if (scenario !== "all" && !scenarios[scenario]) {
-    throw new Error("--scenario must be happy, persist, fallback, large, cache, judge, or all");
+    throw new Error("--scenario must be happy, persist, fallback, large, cache, pdf, web, judge, or all");
   }
+  // Prerequisite gates: a missing prerequisite skips only that scenario, never fails the run.
+  const skipReasons = {
+    pdf: hasPdftotext() ? undefined : "pdf (pdftotext not found)",
+    web: process.env.PARADOC_E2E_WEB === "1" ? undefined : "web (set PARADOC_E2E_WEB=1)",
+  };
   const fixtureMod = await import(pathToFileURL(fixtureModule));
   E2E_FIXTURE_LINES = fixtureMod.E2E_FIXTURE_LINES;
   E2E_FIXTURE_SYMBOL = fixtureMod.E2E_FIXTURE_SYMBOL;
@@ -322,7 +410,12 @@ async function main() {
     largeFixture: fixtureMod.buildLargeE2eFixture(),
   };
   const hostVersion = binaryProbe.stdout.trim();
-  const names = scenario === "all" ? Object.keys(scenarios) : [scenario];
+  const requested = scenario === "all" ? Object.keys(scenarios) : [scenario];
+  const names = requested.filter((name) => {
+    if (!skipReasons[name]) return true;
+    console.log(`SKIP ${skipReasons[name]}`);
+    return false;
+  });
   const started = Date.now();
   const results = [];
   let failure;

@@ -9,7 +9,7 @@ import {
   type ResultCache,
   type TuningSettings,
 } from "../core/index.js";
-import type { InterceptionEvent, JudgeOptions, SubagentRunner } from "../core/index.js";
+import type { InterceptionEvent, JudgeOptions, PdfExtractor, SubagentRunner } from "../core/index.js";
 import { createOpenCodeModelPicker } from "./model-picker.js";
 import type { OpenCodeModelPickerOptions, OpenCodePickerUi } from "./model-picker.js";
 import { renderInterceptionResult } from "./render.js";
@@ -50,6 +50,8 @@ export interface ParaDocHooksOptions {
   maxRetries?: number;
   retryDelayMs?: number;
   judge?: JudgeOptions;
+  /** Test seam: replaces native pdftotext extraction. */
+  pdfExtractor?: PdfExtractor;
   /** Test seam: isolates config resolution from the real user environment. */
   configOptions?: { homeDir?: string; env?: Record<string, string | undefined> };
 }
@@ -161,6 +163,7 @@ export function createParaDocHooks(options: ParaDocHooksOptions): ParaDocHooks {
     maxRetries: options.maxRetries,
     retryDelayMs: options.retryDelayMs,
     ...(options.judge ? { judge: options.judge } : {}),
+    ...(options.pdfExtractor ? { pdfExtractor: options.pdfExtractor } : {}),
     logger: (event) =>
       log(
         eventLogLevel(event),
