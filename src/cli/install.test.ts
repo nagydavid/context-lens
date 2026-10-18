@@ -28,6 +28,8 @@ describe("install", () => {
 
     const oc = readFileSync(join(home, ".config", "opencode", "plugins", "paradoc.js"), "utf8");
     assert.ok(oc.includes(pathToFileURL(join(runtime, "dist", "opencode", "plugin-v2.js")).href));
+    const ocConfig = readFileSync(join(home, ".config", "opencode", "opencode.jsonc"), "utf8");
+    assert.ok(ocConfig.includes(pathToFileURL(join(home, ".config", "opencode", "plugins", "paradoc.js")).href));
     const cp = readFileSync(join(home, ".copilot", "extensions", "paradoc", "extension.mjs"), "utf8");
     assert.ok(cp.includes(pathToFileURL(join(runtime, "dist", "copilot-cli", "extension-entry.js")).href));
   });
@@ -38,6 +40,21 @@ describe("install", () => {
     install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
     install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
     assert.ok(existsSync(join(cwd, ".opencode", "plugins", "paradoc.js")));
+    const projectConfig = readFileSync(join(cwd, "opencode.jsonc"), "utf8");
+    assert.equal(projectConfig.match(/paradoc\.js/g)?.length, 1);
     assert.ok(!existsSync(join(home, ".copilot")));
+  });
+
+  it("adds the shim to an existing OpenCode plugin array without clobbering config", () => {
+    const { root, distDir, home, env } = fixture();
+    const cwd = join(root, "existing");
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(cwd, "opencode.jsonc"), '{\n  "plugin": ["existing-plugin"],\n  "theme": "dark"\n}\n');
+    install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
+    install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
+    const config = readFileSync(join(cwd, "opencode.jsonc"), "utf8");
+    assert.ok(config.includes('"existing-plugin"'));
+    assert.ok(config.includes('"theme": "dark"'));
+    assert.equal(config.match(/paradoc\.js/g)?.length, 1);
   });
 });

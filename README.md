@@ -12,7 +12,7 @@ npx -y --package=@davidnagy/paradoc@latest paradoc install opencode   # or: copi
 npx -y --package=@davidnagy/paradoc@latest paradoc install opencode --project   # ./.opencode instead of ~/.config/opencode
 ```
 
-The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.1.0`; the manual setup below is only needed for custom layouts.
+The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.1.2`; the manual setup below is only needed for custom layouts.
 
 ## Product intent
 
