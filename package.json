@@ -1,6 +1,6 @@
 {
   "name": "@davidnagy/paradoc",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Cheap-model read interceptor for coding agents (Spotify Portal pattern)",
   "type": "module",
   "main": "dist/index.js",
