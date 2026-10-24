@@ -32,6 +32,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # PDF fixtures need the pdftotext binary; the runner image does not ship it.
+      - name: Install poppler-utils (pdftotext)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
       # Tests run from dist, so the build must succeed first; a failed build must not
       # be mistaken for a passing zero-test run.
       - name: Build

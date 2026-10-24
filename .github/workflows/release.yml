@@ -49,6 +49,9 @@ jobs:
           fi
           echo "Releasing ${pkg_version}"
 
+      - name: Install poppler-utils (pdftotext)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
       - name: Build
         run: npm run build
 
