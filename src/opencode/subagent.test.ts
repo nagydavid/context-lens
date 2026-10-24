@@ -3,7 +3,7 @@ import { unlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, it } from "node:test";
-import { handleOpenCodeRead } from "./index.js";
+import { ReadInterceptor } from "../core/index.js";
 import {
   createOpenCodeRunner,
   SessionSubagentRunner,
@@ -209,7 +209,7 @@ describe("SessionSubagentRunner", () => {
     strictEqual(await measure(2), 2);
   });
 
-  it("forwards explicit questions through handleOpenCodeRead to a serialized runner", async () => {
+  it("forwards explicit questions through ReadInterceptor to a serialized runner", async () => {
     const filePath = join(tmpdir(), `paradoc-opencode-${Date.now()}.txt`);
     const content = Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n") + "\n" + "z".repeat(4000);
     writeFileSync(filePath, content);
@@ -223,10 +223,12 @@ describe("SessionSubagentRunner", () => {
       },
     });
     try {
-      const result = await handleOpenCodeRead(
-        { filePath, question: "Where is foo defined?" },
-        { runner: createOpenCodeRunner(client) }
-      );
+      const interceptor = new ReadInterceptor({ runner: createOpenCodeRunner(client) });
+      const result = await interceptor.intercept({
+        filePath,
+        question: "Where is foo defined?",
+        agentContext: {},
+      });
       strictEqual(result.wasIntercepted, true);
       strictEqual(result.confidence, 5);
       strictEqual(result.excerpts[0].content, "line 120\nline 121\nline 122");

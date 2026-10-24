@@ -1,5 +1,5 @@
 import { deepStrictEqual, ok, strictEqual } from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -31,11 +31,14 @@ function project(name: string, body = buildE2eFixture(), filename = "fixture.ts"
   return { dir, path, relative: filename };
 }
 function server(dir: string, runner = new FakeSubagentRunner({ text: answer }), extra: Parameters<typeof createMcpServer>[0] = {}) {
-  return { runner, mcp: createMcpServer({ cwd: dir, runner, configOptions: { env: {} }, ...extra }) };
+  return { runner, mcp: createMcpServer({ cwd: dir, runner, configOptions: { env: {}, homeDir: join(root, "home") }, ...extra }) };
+}
+async function callTool(mcp: ReturnType<typeof createMcpServer>, name: string, arguments_: Record<string, unknown> = {}) {
+  const response = await mcp.handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: arguments_ } });
+  return response!.result as { content: [{ text: string }]; isError: boolean };
 }
 async function call(mcp: ReturnType<typeof createMcpServer>, arguments_: Record<string, unknown>) {
-  const response = await mcp.handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "paradoc_read", arguments: arguments_ } });
-  return response!.result as { content: [{ text: string }]; isError: boolean };
+  return callTool(mcp, "paradoc_read", arguments_);
 }
 
 describe("MCP paradoc_read", () => {
@@ -50,6 +53,7 @@ describe("MCP paradoc_read", () => {
     deepStrictEqual((await mcp.handleMessage({ jsonrpc: "2.0", id: 5, method: "ping" }))?.result, {});
     const tools = (await mcp.handleMessage({ jsonrpc: "2.0", id: 6, method: "tools/list", params: { cursor: "ignored" } }))?.result as any;
     deepStrictEqual(tools.tools[0].inputSchema.required, ["path", "question"]);
+    deepStrictEqual(tools.tools.map((tool: { name: string }) => tool.name), ["paradoc_read", "paradoc_web_read", "paradoc_status", "paradoc_set", "paradoc_reset"]);
   });
 
   it("condenses a large explicit question and leaves a small file raw", async () => {
@@ -190,6 +194,60 @@ describe("MCP paradoc_read", () => {
     ok(logs.some((line) => line.includes("cacheHit=true")));
   });
 
+  describe("ParaDoc controls", () => {
+    it("reports effective settings and persists project/global set/reset operations", async () => {
+      const item = project("controls");
+      mkdirSync(join(item.dir, ".paradoc"), { recursive: true });
+      writeFileSync(join(item.dir, ".paradoc", "config.json"), JSON.stringify({ version: 1, model: { providerID: "test", modelID: "small" }, unknown: true }));
+      const test = server(item.dir);
+
+      const before = await callTool(test.mcp, "paradoc_status");
+      strictEqual(before.isError, false);
+      ok(before.content[0].text.includes("config (project):"));
+      ok(before.content[0].text.includes("thresholdLines"));
+      ok(before.content[0].text.includes("default"));
+
+      const set = await callTool(test.mcp, "paradoc_set", { key: "thresholdLines", value: 500 });
+      strictEqual(set.isError, false);
+      ok(set.content[0].text.includes("wrote"));
+      const stored = JSON.parse(readFileSync(join(item.dir, ".paradoc", "config.json"), "utf8"));
+      strictEqual(stored.model.providerID, "test");
+      strictEqual(stored.unknown, true);
+      strictEqual(stored.tuning.thresholdLines, 500);
+
+      const after = await callTool(test.mcp, "paradoc_status");
+      ok(/thresholdLines\s+500\s+project/.test(after.content[0].text));
+      ok(after.content[0].text.includes("project"));
+
+      const global = await callTool(test.mcp, "paradoc_set", { key: "judge", value: "always", scope: "global" });
+      strictEqual(global.isError, false);
+      const globalConfig = JSON.parse(readFileSync(join(root, "home", ".config", "paradoc", "config.json"), "utf8"));
+      strictEqual(globalConfig.tuning.judge, "always");
+      const globalReset = await callTool(test.mcp, "paradoc_reset", { key: "judge", scope: "global" });
+      strictEqual(globalReset.isError, false);
+
+      const reset = await callTool(test.mcp, "paradoc_reset", { key: "thresholdLines" });
+      strictEqual(reset.isError, false);
+      const resetStored = JSON.parse(readFileSync(join(item.dir, ".paradoc", "config.json"), "utf8"));
+      strictEqual(resetStored.tuning?.thresholdLines, undefined);
+    });
+
+    it("returns actionable error results for invalid controls and corrupt config", async () => {
+      const item = project("controls-errors");
+      const test = server(item.dir);
+      for (const args of [{ key: "nope", value: 5 }, { key: "thresholdLines", value: "bad" }]) {
+        const result = await callTool(test.mcp, "paradoc_set", args);
+        strictEqual(result.isError, true);
+        ok(result.content[0].text.includes("keys:"));
+      }
+      mkdirSync(join(item.dir, ".paradoc"), { recursive: true });
+      writeFileSync(join(item.dir, ".paradoc", "config.json"), "not-json");
+      const corrupt = await callTool(test.mcp, "paradoc_set", { key: "thresholdLines", value: 500 });
+      strictEqual(corrupt.isError, true);
+      ok(corrupt.content[0].text.includes(join(item.dir, ".paradoc", "config.json")));
+    });
+  });
+
   describe("resolved tuning", () => {
     function tuned(name: string, tuning: unknown, body?: string) {
       const item = project(name, body);
@@ -232,6 +290,85 @@ describe("MCP paradoc_read", () => {
       ok(logs.some((line) => line.includes("warn") && line.includes("thresholdLines")));
     });
   });
+
+  describe("diagnostics and lazy startup", () => {
+    function jsonl(path: string): Array<Record<string, unknown>> {
+      return readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    }
+
+    it("writes unified JSONL records with ts and no time field", async () => {
+      const item = project("diagnostics");
+      const logFile = join(root, "diagnostics.jsonl");
+      const test = server(item.dir, undefined, { logFile, configOptions: { env: {}, homeDir: root } });
+      await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
+      const records = jsonl(logFile);
+      strictEqual(records.length, 1);
+      const record = records[0];
+      strictEqual(typeof record.ts, "string");
+      ok(!Number.isNaN(Date.parse(String(record.ts))));
+      strictEqual("time" in record, false);
+      strictEqual(record.level, "info");
+      strictEqual(record.intercepted, true);
+      strictEqual(typeof record.elapsedMs, "number");
+      ok(record.stats && typeof record.stats === "object");
+    });
+
+    it("records tuning warnings with ts before any tool call", async () => {
+      const item = project("diagnostics-warn");
+      mkdirSync(join(item.dir, ".paradoc"), { recursive: true });
+      writeFileSync(join(item.dir, ".paradoc", "config.json"), JSON.stringify({ version: 1, tuning: { thresholdLines: -5 } }));
+      const logFile = join(root, "warn.jsonl");
+      const test = server(item.dir, undefined, { logFile, configOptions: { env: {}, homeDir: root } });
+      const warn = jsonl(logFile).find((record) => record.level === "warn");
+      ok(warn, "expected a warn record from the invalid tuning value");
+      strictEqual(typeof warn?.ts, "string");
+      strictEqual("time" in (warn ?? {}), false);
+      ok(String(warn?.message).includes("thresholdLines"));
+      strictEqual(test.runner.calls.length, 0);
+    });
+
+    it("keeps the stderr text line byte-identical while the record gains ts", async () => {
+      const item = project("diagnostics-line");
+      const logs: string[] = [];
+      const test = server(item.dir, undefined, { stderr: (line) => logs.push(line), configOptions: { env: {}, homeDir: root } });
+      await call(test.mcp, { path: item.relative, question: "Where is the checksum?" });
+      strictEqual(logs.length, 1);
+      const match = /^\[paradoc\] info: intercepted \S*fixture\.ts \([^)]*\d+ms\) (\{.*\})\n$/s.exec(logs[0]);
+      ok(match, logs[0]);
+      const extra = JSON.parse(match[1]) as Record<string, unknown>;
+      strictEqual(typeof extra.elapsedMs, "number");
+      ok(extra.stats && typeof extra.stats === "object");
+    });
+
+    it("builds the interceptor only on the first tools/call and reuses it", async () => {
+      const item = project("lazy");
+      const runner = new FakeSubagentRunner({ text: answer });
+      let built = 0;
+      const mcp = createMcpServer({
+        cwd: item.dir,
+        configOptions: { env: {}, homeDir: root },
+        runner: (settings) => { built += 1; strictEqual(typeof settings.concurrency, "number"); return runner; },
+      });
+      strictEqual(built, 0);
+      await mcp.handleMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+      await mcp.handleMessage({ jsonrpc: "2.0", id: 2, method: "ping" });
+      const tools = (await mcp.handleMessage({ jsonrpc: "2.0", id: 3, method: "tools/list" }))?.result as any;
+      deepStrictEqual(tools.tools.map((tool: { name: string }) => tool.name), ["paradoc_read", "paradoc_web_read", "paradoc_status", "paradoc_set", "paradoc_reset"]);
+      strictEqual(built, 0);
+      strictEqual(runner.calls.length, 0);
+      // An unknown tool name is rejected before the interceptor is built.
+      strictEqual((await mcp.handleMessage({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "nope" } }))?.error?.code, -32602);
+      strictEqual(built, 0);
+      await callTool(mcp, "paradoc_status");
+      strictEqual(built, 0);
+      await call(mcp, { path: item.relative, question: "Where is the checksum?" });
+      strictEqual(built, 1);
+      strictEqual(runner.calls.length, 1);
+      await call(mcp, { path: item.relative, question: "Where is the checksum?" });
+      strictEqual(built, 1);
+      strictEqual(runner.calls.length, 1);
+    });
+  });
 });
 
 const PUBLIC_HOST = async () => ["93.184.216.34"];
@@ -265,6 +402,7 @@ describe("MCP paradoc_web_read", () => {
     strictEqual(tools.tools[0].name, "paradoc_read");
     strictEqual(tools.tools[1].name, "paradoc_web_read");
     deepStrictEqual(tools.tools[1].inputSchema.required, ["url", "question"]);
+    strictEqual(tools.tools.length, 5);
     const bad = await mcp.handleMessage({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "nope" } });
     strictEqual(bad?.error?.code, -32602);
   });

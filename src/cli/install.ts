@@ -156,6 +156,37 @@ function registerOpenCodeMcp(configPath: string, mcpEntry: string): boolean {
 }
 
 /** Registers the stdio MCP server in Copilot's plain-JSON config; an existing `paradoc` entry is kept. */
+const OPENCODE_COMMAND_MARKER = "<!-- ParaDoc-generated command; safe to replace -->";
+
+function openCodeCommand(): string {
+  return [
+    "---",
+    "description: ParaDoc controls: status | set <key> <value> | reset [key] [--global]",
+    "---",
+    "",
+    OPENCODE_COMMAND_MARKER,
+    "",
+    "Use the ParaDoc MCP control tools. Do not run shell commands or edit config files.",
+    "",
+    "Interpret `$ARGUMENTS` as one of:",
+    "- empty or `status`: call `paradoc_status` with no arguments.",
+    "- `set <key> <value> [--global|--project]`: call `paradoc_set` with `key`, `value`, and optional `scope`.",
+    "- `reset [key] [--global|--project]`: call `paradoc_reset` with optional `key` and `scope`.",
+    "",
+    "Report the tool output verbatim. If the arguments do not match a subcommand, report the control usage from the tool without guessing.",
+    "",
+  ].join("\n");
+}
+
+/** Writes only ParaDoc's marked command template; user-owned commands are never replaced. */
+function writeOpenCodeCommand(dir: string): string | undefined {
+  const commandPath = join(dir, "commands", "paradoc.md");
+  if (existsSync(commandPath) && !readFileSync(commandPath, "utf8").includes(OPENCODE_COMMAND_MARKER)) return undefined;
+  mkdirSync(dirname(commandPath), { recursive: true });
+  writeFileSync(commandPath, openCodeCommand());
+  return commandPath;
+}
+
 function registerCopilotMcp(configPath: string, mcpEntry: string): boolean {
   let config: Record<string, unknown> = {};
   if (existsSync(configPath)) {
@@ -198,9 +229,11 @@ export function install(options: InstallOptions): string[] {
       const configPath = options.project ? join(cwd, "opencode.jsonc") : join(dir, "opencode.jsonc");
       registerOpenCodePlugin(configPath, shim);
       registerOpenCodeMcp(configPath, mcpEntry);
+      const command = writeOpenCodeCommand(dir);
       written.push(`opencode: ${shim}`);
       written.push(`opencode-config: ${configPath}`);
       written.push(`opencode-mcp: ${configPath}`);
+      if (command) written.push(`opencode-command: ${command}`);
     } else {
       const dir = join(home, ".copilot", "extensions", "paradoc");
       mkdirSync(dir, { recursive: true });

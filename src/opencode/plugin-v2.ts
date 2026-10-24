@@ -49,22 +49,6 @@ function textOfContent(content: unknown): string {
     .join("\n");
 }
 
-function positiveInteger(value: string | undefined): number | undefined {
-  if (value === undefined || !/^[1-9]\d*$/.test(value)) return undefined;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
-}
-
-/** @deprecated Superseded by `loadTuning` in core; no longer used by the plugin. */
-export function readFanoutEnv(env: NodeJS.ProcessEnv): { chunkLines?: number; concurrency?: number } {
-  const chunkLines = positiveInteger(env.PARADOC_CHUNK_LINES);
-  const concurrency = positiveInteger(env.PARADOC_CONCURRENCY);
-  return {
-    ...(chunkLines !== undefined ? { chunkLines } : {}),
-    ...(concurrency !== undefined ? { concurrency } : {}),
-  };
-}
-
 /** Adapts the v2 `ctx.session` API to the client shape the runner was written against. */
 export function createV2Client(ctx: ParaDocV2Context): ParaDocClient {
   const appLog = asRecord(ctx.app)?.log;

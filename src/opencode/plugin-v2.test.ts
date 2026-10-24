@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { ParaDocV2Plugin, createV2Client, readFanoutEnv } from "./plugin-v2.js";
+import { ParaDocV2Plugin, createV2Client } from "./plugin-v2.js";
 import type { ParaDocV2Context } from "./plugin-v2.js";
 
 function makeCtx(overrides: Partial<ParaDocV2Context["session"]> = {}) {
@@ -94,22 +94,6 @@ describe("ParaDocV2Plugin tuning", () => {
       }
       rmSync(dir, { recursive: true, force: true });
     }
-  });
-});
-
-describe("readFanoutEnv", () => {
-  it("reads positive chunk and concurrency values", () => {
-    deepStrictEqual(readFanoutEnv({ PARADOC_CHUNK_LINES: "1000", PARADOC_CONCURRENCY: "3" }), {
-      chunkLines: 1000,
-      concurrency: 3,
-    });
-  });
-
-  it("omits absent, garbage, zero, and negative values", () => {
-    deepStrictEqual(readFanoutEnv({}), {});
-    deepStrictEqual(readFanoutEnv({ PARADOC_CHUNK_LINES: "", PARADOC_CONCURRENCY: "" }), {});
-    deepStrictEqual(readFanoutEnv({ PARADOC_CHUNK_LINES: "nope", PARADOC_CONCURRENCY: "0" }), {});
-    deepStrictEqual(readFanoutEnv({ PARADOC_CHUNK_LINES: "-1", PARADOC_CONCURRENCY: "-3" }), {});
   });
 });
 

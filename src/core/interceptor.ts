@@ -4,7 +4,7 @@ import { planChunks } from "./chunking.js";
 import { classifyDocument, type DocumentKind } from "./document.js";
 import { NetworkError, runChunkedRead, TimeoutError } from "./fanout.js";
 import { readTextFile, statFile } from "./file-guard.js";
-import { createPdftotextExtractor, DEFAULT_PDF_MAX_CHARS, DEFAULT_PDF_TIMEOUT_MS, readPdfDocument, type PdfExtractor } from "./pdf.js";
+import { createPdftotextExtractor, readPdfDocument, type PdfExtractor } from "./pdf.js";
 import type { AgentContext, FallbackReason, InterceptionResult, JudgeOutcome, ReadRequest } from "./models.js";
 import { buildJudgePrompt, JUDGE_SCHEMA, parseJudgeVerdict, shouldRunJudge, type JudgeOptions } from "./judge.js";
 import { normalizeRanges, parseSubagentResult, sliceExcerpts } from "./parse.js";
@@ -12,17 +12,13 @@ import { buildSubagentPrompt } from "./prompts.js";
 import { resolveQuestion } from "./question.js";
 import { SUBAGENT_ANSWER_SCHEMA } from "./subagent.js";
 import { isTransientError } from "./transient.js";
+import { DEFAULT_TUNING } from "./tuning.js";
 import type { ResolvedModel, ResolvedModelSource } from "./model-selector.js";
 import type { SubagentResult, SubagentRunner } from "./subagent.js";
 
-const DEFAULT_THRESHOLD_LINES = 350;
-const DEFAULT_TIMEOUT_MS = 30_000;
+// Every interceptor default comes from DEFAULT_TUNING so hosts and the pipeline share one source.
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_RETRY_DELAY_MS = 100;
-// Below this a delegation costs more than it saves, even past the line threshold.
-const DEFAULT_MIN_TOKENS = 1_000;
-// Long-line files (minified, generated) are intercepted on size even under the line threshold.
-const DEFAULT_THRESHOLD_TOKENS = 8_000;
 
 type Model = { providerID: string; modelID: string } | undefined;
 
@@ -172,8 +168,8 @@ export class ReadInterceptor {
         return readPdfDocument(resolvedPath, {
           extractor: this.options.pdfExtractor ?? getDefaultPdfExtractor(),
           maxFileBytes: this.options.maxFileBytes,
-          timeoutMs: this.options.pdfTimeoutMs ?? DEFAULT_PDF_TIMEOUT_MS,
-          maxChars: this.options.pdfMaxChars ?? DEFAULT_PDF_MAX_CHARS,
+          timeoutMs: this.options.pdfTimeoutMs ?? DEFAULT_TUNING.pdfTimeoutMs,
+          maxChars: this.options.pdfMaxChars ?? DEFAULT_TUNING.pdfMaxChars,
         });
       }
       const stat = statFile(resolvedPath, this.options.maxFileBytes);
@@ -218,8 +214,8 @@ export class ReadInterceptor {
 
       const fileTokens = estimateTokens(fileContent);
       const eligible =
-        fileTokens >= (this.options.thresholdTokens ?? DEFAULT_THRESHOLD_TOKENS) ||
-        (lineCount > (this.options.thresholdLines ?? DEFAULT_THRESHOLD_LINES) && fileTokens >= (this.options.minTokens ?? DEFAULT_MIN_TOKENS));
+        fileTokens >= (this.options.thresholdTokens ?? DEFAULT_TUNING.thresholdTokens) ||
+        (lineCount > (this.options.thresholdLines ?? DEFAULT_TUNING.thresholdLines) && fileTokens >= (this.options.minTokens ?? DEFAULT_TUNING.minTokens));
       if (!eligible) {
         event = { filePath, lineCount, intercepted: false };
         return fullFileResult();
@@ -250,7 +246,7 @@ export class ReadInterceptor {
         }
       }
       modelResolved = true;
-      const timeoutMs = this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const timeoutMs = this.options.timeoutMs ?? DEFAULT_TUNING.timeoutMs;
       const windows = planChunks(lineCount, { chunkLines: this.options.chunkLines ?? 0, overlapLines: this.options.chunkOverlapLines ?? 0 });
       const chunked = Number.isFinite(this.options.chunkLines) && Number.isInteger(this.options.chunkLines) && this.options.chunkLines! >= 1 && windows.length > 1;
       const cache = this.options.cache;
@@ -481,4 +477,3 @@ function countExcerptLines(excerpts: InterceptionResult["excerpts"]): number { r
 function contextSaved(lineCount: number, returned: number): number { return Math.round(((lineCount - returned) / lineCount) * 100); }
 
 export { TimeoutError, NetworkError } from "./fanout.js";
-export async function interceptRead(request: ReadRequest, options?: InterceptOptions): Promise<InterceptionResult> { return new ReadInterceptor(options).intercept(request); }

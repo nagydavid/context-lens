@@ -188,6 +188,18 @@ describe("createCopilotHooks", () => {
     strictEqual(record.intercepted, true);
   });
 
+  it("(n2) uses the unified diagnostics record shape (ts, no time) in the JSONL log", async () => {
+    const logFile = join(tmp, "shape.jsonl");
+    const { hooks } = setup({ env: { PARADOC_LOG_FILE: logFile } });
+    await hooks.onPostToolUse(view(largePath));
+    const record = JSON.parse(readFileSync(logFile, "utf8").trim()) as Record<string, unknown>;
+    strictEqual(typeof record.ts, "string");
+    ok(!Number.isNaN(Date.parse(String(record.ts))));
+    strictEqual("time" in record, false);
+    strictEqual(record.level, "info");
+    ok(record.stats && typeof record.stats === "object");
+  });
+
   it("(o) serves repeat reads from cache, misses after an edit, and shares the cache across working directories", async () => {
     const { hooks, runner, logs } = setup();
     const first = await hooks.onPostToolUse(view(largePath));

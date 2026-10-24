@@ -1,5 +1,5 @@
-import { ok, strictEqual, throws } from "node:assert";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { ok, rejects, strictEqual, throws } from "node:assert";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, before, describe, it } from "node:test";
@@ -49,6 +49,44 @@ describe("Copilot extension entry", () => {
     ok(result?.modifiedResult?.textResultForLlm.includes("[paradoc]"));
     ok(result?.modifiedResult?.textResultForLlm.includes("Confidence:"));
     ok(logs.some((line) => line.includes("intercepted")));
+  });
+
+  it("registers a /paradoc command that persists and reports controls", async () => {
+    const logs: string[] = [];
+    let captured: Parameters<JoinSession>[0] | undefined;
+    const projectRoot = join(tmp, "command-project");
+    mkdirSync(projectRoot, { recursive: true });
+    const fakeJoin: JoinSession = async (config) => {
+      captured = config;
+      return { log: (message) => logs.push(message) };
+    };
+
+    await registerParaDoc(fakeJoin, {
+      env: {},
+      configOptions: { homeDir: tmp, env: {}, projectRoot: tmp },
+      logSink: () => undefined,
+    });
+
+    ok(captured?.commands);
+    const command = captured.commands.find(({ name }) => name === "paradoc");
+    ok(command);
+    strictEqual(command.description, "Show or change ParaDoc settings: status | set <key> <value> | reset [key] [--global]");
+    await captured.hooks.onUserPromptSubmitted?.({ sessionId: "command", prompt: "hi", workingDirectory: projectRoot });
+    await command.handler({ sessionId: "command", command: "/paradoc", commandName: "paradoc", args: "set thresholdLines 500" });
+    const config = readFileSync(join(projectRoot, ".paradoc", "config.json"), "utf8");
+    ok(config.includes('"thresholdLines": 500'));
+    ok(logs.some((line) => line.includes("wrote") && line.includes("restart the host")));
+
+    await command.handler({ sessionId: "command", command: "/paradoc", commandName: "paradoc", args: "status" });
+    ok(/thresholdLines\s+500\s+project/.test(logs.at(-1) ?? ""));
+    await rejects(
+      async () => { await command.handler({ sessionId: "command", command: "/paradoc", commandName: "paradoc", args: "set noSuchKey 1" }); },
+      /keys: .*thresholdLines/,
+    );
+    await rejects(
+      async () => { await command.handler({ sessionId: "command", command: "/paradoc", commandName: "paradoc", args: "set thresholdLines bad" }); },
+      /keys: .*thresholdLines/,
+    );
   });
 
   it("builds an SDK-free shim that imports the compiled entry", async () => {

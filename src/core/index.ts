@@ -1,4 +1,24 @@
-export { ReadInterceptor, eventLogLevel, interceptRead, estimateTokens } from "./interceptor.js";
+export { ReadInterceptor, eventLogLevel, estimateTokens } from "./interceptor.js";
+export { renderInterceptionResult, HINT } from "./render.js";
+export {
+  createHostRuntime,
+  createDiagnostics,
+  explicitFromOptions,
+  isRecord,
+  errorMessage,
+  validLine,
+  describeEvent,
+  displayPathFor,
+} from "./host-runtime.js";
+export type {
+  HostRuntime,
+  HostRuntimeOptions,
+  HostTuningOptions,
+  Diagnostics,
+  DiagnosticsOptions,
+  DiagnosticRecord,
+  DiagnosticLevel,
+} from "./host-runtime.js";
 export { classifyDocument } from "./document.js";
 export type { DocumentKind } from "./document.js";
 export type { ContentReadRequest, InterceptOptions, InterceptionEvent, InterceptStats } from "./interceptor.js";
@@ -83,8 +103,29 @@ export type {
   ResolvedModel,
   ResolvedModelSource,
 } from "./model-selector.js";
-export { DEFAULT_TUNING, loadTuning, tuningToInterceptorOptions } from "./tuning.js";
-export type { TuningOptions, TuningSettings, TuningSource } from "./tuning.js";
+export {
+  DEFAULT_TUNING,
+  loadTuning,
+  tuningToInterceptorOptions,
+  TUNING_KEYS,
+  isTuningKey,
+  validateTuningValue,
+} from "./tuning.js";
+export type { TuningCheck, TuningKey, TuningOptions, TuningSettings, TuningSource } from "./tuning.js";
+export { clearTuning, saveTuning } from "./tuning-write.js";
+export {
+  applyReset,
+  applySet,
+  CONTROL_USAGE,
+  parseControlArgs,
+  renderChange,
+  renderStatus,
+  RESTART_HINT,
+  SOURCE_PRECEDENCE,
+} from "./controls.js";
+export type { ChangeResult, ControlAction } from "./controls.js";
+export { buildStatus, statusConfigPaths } from "./status.js";
+export type { ParadocStatus, StatusInput, StatusModelSource, TuningSourceMap } from "./status.js";
 export { parseWebUrl, isBlockedAddress, maskUrl } from "./url-guard.js";
 export { fetchWebDocument, DEFAULT_WEB_TIMEOUT_MS, DEFAULT_WEB_MAX_BYTES } from "./web-fetch.js";
 export type { WebTransport, WebTransportRequest, WebTransportResponse, WebFetchOptions, WebFetchResult } from "./web-fetch.js";

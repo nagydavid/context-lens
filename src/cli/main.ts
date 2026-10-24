@@ -1,9 +1,20 @@
 #!/usr/bin/env node
 import { install, type InstallTarget } from "./install.js";
+import { CONTROL_USAGE, isControlCommand, runControlCommand } from "./controls-cli.js";
 
-const USAGE = "usage: paradoc install [opencode|copilot|all] [--project]\n";
+const USAGE = `usage: paradoc install [opencode|copilot|all] [--project]
+${CONTROL_USAGE}
+`;
 
 const [command, ...rest] = process.argv.slice(2);
+
+if (isControlCommand(command)) {
+  const { stdout, stderr, code } = runControlCommand([command, ...rest]);
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+  process.exit(code);
+}
+
 const flags = rest.filter((arg) => arg.startsWith("--"));
 const names = rest.filter((arg) => !arg.startsWith("--"));
 const unknownFlag = flags.find((flag) => flag !== "--project");

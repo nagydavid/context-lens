@@ -38,4 +38,20 @@ export interface CopilotSessionLike {
   log?: (message: string, options?: unknown) => unknown;
 }
 
-export type JoinSession = (config: { hooks: Partial<CopilotHooks> }) => Promise<CopilotSessionLike>;
+export interface CopilotCommandContext {
+  sessionId: string;
+  command: string;
+  commandName: string;
+  args: string;
+}
+
+export interface CopilotCommandDefinition {
+  name: string;
+  description?: string;
+  handler: (context: CopilotCommandContext) => void | Promise<void>;
+}
+
+export type JoinSession = (config: {
+  hooks: Partial<CopilotHooks>;
+  commands?: CopilotCommandDefinition[];
+}) => Promise<CopilotSessionLike>;

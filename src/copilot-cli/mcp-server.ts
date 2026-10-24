@@ -1,13 +1,23 @@
-import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import {
-  LruResultCache,
-  ModelSelector,
-  ReadInterceptor,
-  eventLogLevel,
-  loadTuning,
+  createDiagnostics,
+  createHostRuntime,
+  errorMessage,
+  explicitFromOptions,
+  isRecord,
+  validLine,
+} from "../core/host-runtime.js";
+import { renderInterceptionResult } from "../core/render.js";
+import {
+  applyReset,
+  applySet,
+  parseControlArgs,
+  renderChange,
+  renderStatus,
+} from "../core/controls.js";
+import {
   readTextFile,
   readPdfDocument,
   readWebDocument,
@@ -15,19 +25,17 @@ import {
   classifyDocument,
   DEFAULT_PDF_MAX_CHARS,
   DEFAULT_PDF_TIMEOUT_MS,
-  tuningToInterceptorOptions,
   type ConfigOptions,
-  type InterceptionEvent,
-  type ResultCache,
   type InterceptionResult,
   type JudgeOptions,
   type PdfExtractor,
+  type ReadInterceptor,
+  type ResultCache,
   type SubagentRunner,
   type TuningSettings,
   type WebFetchOptions,
   type WebReadResult,
 } from "../core/index.js";
-import { renderInterceptionResult } from "../opencode/render.js";
 import { createCopilotRunner } from "./subagent.js";
 
 export const PARADOC_READ_TOOL = {
@@ -62,17 +70,51 @@ export const PARADOC_WEB_READ_TOOL = {
   },
 } as const;
 
+export const PARADOC_STATUS_TOOL = {
+  name: "paradoc_status",
+  description: "Show effective ParaDoc settings, provenance, config paths, model selection, and runtime counters.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+} as const;
+
+export const PARADOC_SET_TOOL = {
+  name: "paradoc_set",
+  description: "Persist one validated ParaDoc tuning setting.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      key: { type: "string" },
+      value: { type: ["string", "number"] },
+      scope: { type: "string", enum: ["project", "global"] },
+    },
+    required: ["key", "value"],
+    additionalProperties: false,
+  },
+} as const;
+
+export const PARADOC_RESET_TOOL = {
+  name: "paradoc_reset",
+  description: "Reset one ParaDoc tuning setting, or all settings in a scope.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      key: { type: "string" },
+      scope: { type: "string", enum: ["project", "global"] },
+    },
+    additionalProperties: false,
+  },
+} as const;
+
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
 export const MCP_HINT = "Call paradoc_read again with start_line/end_line to see exact content; ranged reads are never condensed.";
 export const WEB_MCP_HINT = "Call paradoc_web_read again with start_line/end_line for exact converted page text; ranged reads are never condensed.";
 
-type LogLevel = "debug" | "info" | "warn" | "error";
 type JsonRpcId = string | number | null;
 export type JsonRpcResponse = { jsonrpc: "2.0"; id: JsonRpcId; result?: unknown; error?: { code: number; message: string } };
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError: boolean };
 
 export interface McpServerOptions {
-  runner?: SubagentRunner;
+  /** Runner instance, or a lazy factory built from the resolved tuning so startup stays fast. */
+  runner?: SubagentRunner | ((settings: TuningSettings) => SubagentRunner);
   cache?: ResultCache;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -94,24 +136,16 @@ export interface McpServerOptions {
   logFile?: string;
 }
 
-interface ReadDependencies {
+/** Shared handler context handed to every registered MCP tool. */
+export interface ToolContext {
   cwd: string;
   env: NodeJS.ProcessEnv;
-  interceptor: ReadInterceptor;
+  interceptor?: ReadInterceptor;
+  getStatus: () => Promise<import("../core/status.js").ParadocStatus>;
+  configOptions: ConfigOptions;
   maxFileBytes?: number;
   pdfExtractor?: PdfExtractor;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function describeEvent(event: InterceptionEvent): string {
-  const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
-  const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
-  if (event.intercepted) return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${event.cacheHit ? ", cacheHit=true" : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
-  if (event.fallbackReason) return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
-  return `passthrough ${event.filePath} (${event.lineCount} lines)`;
+  webFetchOptions?: WebFetchOptions;
 }
 
 function toolText(text: string, isError = false): ToolResult {
@@ -141,10 +175,6 @@ async function readGuarded(filePath: string, maxFileBytes?: number, pdfExtractor
   return stat.ok ? readTextFile(filePath) : stat;
 }
 
-function validLine(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1;
-}
-
 export function toToolResult(result: InterceptionResult, displayPath: string): ToolResult {
   if (result.error) return toolText(`paradoc: ${result.error} (${result.fallback?.reason ?? "unreadable"}): ${result.fallback?.detail ?? ""}`, true);
   if (result.wasIntercepted) return toolText(renderInterceptionResult(result, { displayPath, hint: MCP_HINT }));
@@ -156,14 +186,14 @@ export function toToolResult(result: InterceptionResult, displayPath: string): T
 }
 
 /** Handles the public tool arguments; ranged reads deliberately bypass interception. */
-export async function handleParaDocRead(args: unknown, deps: ReadDependencies): Promise<ToolResult> {
+export async function handleParaDocRead(args: unknown, deps: ToolContext): Promise<ToolResult> {
   if (!isRecord(args)) return toolText("paradoc: arguments must be an object", true);
   if (typeof args.path !== "string" || args.path.trim() === "") return toolText("paradoc: path must be a non-empty string", true);
   if (typeof args.question !== "string" || args.question.trim() === "") return toolText("paradoc: question must be a non-empty string", true);
   const filePath = resolve(deps.cwd, args.path);
   const ranged = Object.prototype.hasOwnProperty.call(args, "start_line") || Object.prototype.hasOwnProperty.call(args, "end_line");
   if (ranged || deps.env.PARADOC_CHILD === "1") {
-    deps.interceptor.noteBypass();
+    deps.interceptor!.noteBypass();
     if ((Object.prototype.hasOwnProperty.call(args, "start_line") && !validLine(args.start_line)) ||
         (Object.prototype.hasOwnProperty.call(args, "end_line") && !validLine(args.end_line))) {
       return toolText("paradoc: invalid range", true);
@@ -191,14 +221,8 @@ export async function handleParaDocRead(args: unknown, deps: ReadDependencies): 
       contextSaved: 0,
     }, { displayPath: args.path, hint: MCP_HINT }));
   }
-  const result = await deps.interceptor.intercept({ filePath, projectRoot: deps.cwd, question: args.question.trim(), agentContext: {} });
+  const result = await deps.interceptor!.intercept({ filePath, projectRoot: deps.cwd, question: args.question.trim(), agentContext: {} });
   return toToolResult(result, args.path);
-}
-
-interface WebReadDependencies {
-  env: NodeJS.ProcessEnv;
-  interceptor: ReadInterceptor;
-  webFetchOptions?: WebFetchOptions;
 }
 
 const DEFAULT_WEB_FALLBACK_LINES = 400;
@@ -226,7 +250,35 @@ function renderWebResult(result: WebReadResult, childPassthrough: boolean): Tool
 }
 
 /** Handles paradoc_web_read; ranged reads (and PARADOC_CHILD passthrough) bypass condensation. */
-export async function handleParaDocWebRead(args: unknown, deps: WebReadDependencies): Promise<ToolResult> {
+export async function handleParaDocStatus(_args: unknown, deps: ToolContext): Promise<ToolResult> {
+  return toolText(renderStatus(await deps.getStatus()));
+}
+
+function controlScope(scope: unknown): string {
+  return scope === undefined ? "" : ` --${String(scope)}`;
+}
+
+/** Maps structured MCP arguments to the shared textual control contract. */
+export async function handleParaDocSet(args: unknown, deps: ToolContext): Promise<ToolResult> {
+  if (!isRecord(args)) return toolText("paradoc: arguments must be an object", true);
+  const action = parseControlArgs(`set ${String(args.key ?? "")} ${String(args.value ?? "")}${controlScope(args.scope)}`);
+  if (action.action === "error") return toolText(action.message, true);
+  if (action.action !== "set") return toolText("paradoc: set needs a key and a value", true);
+  const result = applySet({ [action.key]: action.value }, action.scope, deps.configOptions);
+  return toolText(renderChange("set", result), !result.ok);
+}
+
+export async function handleParaDocReset(args: unknown, deps: ToolContext): Promise<ToolResult> {
+  if (!isRecord(args)) return toolText("paradoc: arguments must be an object", true);
+  const key = args.key === undefined ? "" : String(args.key);
+  const action = parseControlArgs(`reset ${key}${controlScope(args.scope)}`);
+  if (action.action === "error") return toolText(action.message, true);
+  if (action.action !== "reset") return toolText("paradoc: reset accepts at most one key", true);
+  const result = applyReset(action.scope, deps.configOptions, action.key ? [action.key] : undefined);
+  return toolText(renderChange("reset", result), !result.ok);
+}
+
+export async function handleParaDocWebRead(args: unknown, deps: ToolContext): Promise<ToolResult> {
   if (!isRecord(args)) return toolText("paradoc: arguments must be an object", true);
   if (typeof args.url !== "string" || args.url.trim() === "") return toolText("paradoc: url must be a non-empty string", true);
   if (typeof args.question !== "string" || args.question.trim() === "") return toolText("paradoc: question must be a non-empty string", true);
@@ -243,52 +295,55 @@ export async function handleParaDocWebRead(args: unknown, deps: WebReadDependenc
     // Child processes must never recurse into condensation: serve the bounded converted text instead.
     ...(childPassthrough ? { startLine: 1, endLine: DEFAULT_WEB_FALLBACK_LINES } : {}),
     ...(ranged ? { startLine: args.start_line as number | undefined, endLine: args.end_line as number | undefined } : {}),
-  }, { interceptor: deps.interceptor, fetchOptions: deps.webFetchOptions });
+  }, { interceptor: deps.interceptor!, fetchOptions: deps.webFetchOptions });
   return renderWebResult(result, childPassthrough);
 }
 
 function response(id: JsonRpcId, result: unknown): JsonRpcResponse { return { jsonrpc: "2.0", id, result }; }
 function rpcError(id: JsonRpcId, code: number, message: string): JsonRpcResponse { return { jsonrpc: "2.0", id, error: { code, message } }; }
 
+/**
+ * Data-driven tool registry: adding an entry here registers the tool in both
+ * `tools/list` and `tools/call`, so later hosts (e.g. `/paradoc status`) add tools
+ * without touching the JSON-RPC dispatch.
+ */
+type ToolDefinition = { name: string; description: string; inputSchema: object };
+type ToolRegistration = { definition: ToolDefinition; handler: (args: unknown, deps: ToolContext) => Promise<ToolResult>; usesInterceptor?: boolean };
+
+export const TOOLS: ReadonlyArray<ToolRegistration> = [
+  { definition: PARADOC_READ_TOOL, handler: handleParaDocRead, usesInterceptor: true },
+  { definition: PARADOC_WEB_READ_TOOL, handler: handleParaDocWebRead, usesInterceptor: true },
+  { definition: PARADOC_STATUS_TOOL, handler: handleParaDocStatus },
+  { definition: PARADOC_SET_TOOL, handler: handleParaDocSet },
+  { definition: PARADOC_RESET_TOOL, handler: handleParaDocReset },
+];
+
 export function createMcpServer(options: McpServerOptions = {}) {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
-  const logFile = options.logFile ?? env.PARADOC_LOG_FILE;
-  const log = (level: LogLevel, message: string, extra: Record<string, unknown> = {}): void => {
-    const record = { time: new Date().toISOString(), level, message, ...extra };
-    const line = `[paradoc] ${level}: ${message} ${JSON.stringify(extra)}`;
-    try { (options.stderr ?? ((text) => process.stderr.write(text)))(`${line}\n`); } catch { /* best effort */ }
-    if (logFile) try { appendFileSync(logFile, `${JSON.stringify(record)}\n`, "utf8"); } catch { /* best effort */ }
-  };
-  const selector = new ModelSelector({ ...options.configOptions, projectRoot: cwd, onWarning: (message) => log("warn", message) });
-  const explicit: Partial<TuningSettings> = {};
-  if (options.thresholdLines !== undefined) explicit.thresholdLines = options.thresholdLines;
-  if (options.timeoutMs !== undefined) explicit.timeoutMs = options.timeoutMs;
-  if (options.concurrency !== undefined) explicit.concurrency = options.concurrency;
-  if (options.chunkLines !== undefined) explicit.chunkLines = options.chunkLines;
-  if (options.chunkOverlapLines !== undefined) explicit.chunkOverlapLines = options.chunkOverlapLines;
-  if (options.judge?.mode !== undefined) explicit.judge = options.judge.mode;
-  const { settings } = loadTuning({
-    ...options.configOptions,
-    env: options.configOptions?.env ?? options.env ?? process.env,
-    projectRoot: cwd,
-    explicit,
-    onWarning: (message) => log("warn", message),
+  const stderr = options.stderr ?? ((text: string) => process.stderr.write(text));
+  // Unified record shape { ts, level, message, ...extra }; the text line stays byte-stable for log scrapers.
+  const log = createDiagnostics({ logFile: options.logFile ?? env.PARADOC_LOG_FILE, stderr: (line) => stderr(`${line}\n`) }).log;
+  const runtime = createHostRuntime({
+    projectRoot: cwd, configOptions: options.configOptions, env, explicit: explicitFromOptions(options), log,
+    runner: options.runner ?? ((settings) => createCopilotRunner({ concurrency: settings.concurrency })),
+    cache: options.cache, pdfExtractor: options.pdfExtractor, judge: options.judge,
+    maxFileBytes: options.maxFileBytes, maxRetries: options.maxRetries, retryDelayMs: options.retryDelayMs,
   });
-  let runner = options.runner;
-  const cache = options.cache ??
-    (settings.cacheMaxEntries > 0 ? new LruResultCache({ maxEntries: settings.cacheMaxEntries }) : undefined);
-  let interceptor: ReadInterceptor | undefined;
-  const interceptorFor = () => interceptor ??= new ReadInterceptor({
-    cache, runner: runner ??= createCopilotRunner({ concurrency: settings.concurrency }), modelResolver: selector.resolve,
-    ...tuningToInterceptorOptions(settings),
+  const configOptions: ConfigOptions = { ...options.configOptions, projectRoot: cwd, env: options.configOptions?.env ?? env };
+  const context = (usesInterceptor: boolean): ToolContext => ({
+    cwd,
+    env,
+    ...(usesInterceptor ? { interceptor: runtime.interceptorFor(cwd) } : {}),
+    getStatus: () => runtime.getStatus(cwd),
+    configOptions,
     maxFileBytes: options.maxFileBytes,
-    maxRetries: options.maxRetries, retryDelayMs: options.retryDelayMs,
-    ...(options.judge ? { judge: options.judge } : {}),
-    ...(options.pdfExtractor ? { pdfExtractor: options.pdfExtractor } : {}),
-    logger: (event) => log(eventLogLevel(event), describeEvent(event), { ...event, stats: interceptor!.stats() }),
+    pdfExtractor: options.pdfExtractor,
+    webFetchOptions: options.webFetchOptions,
   });
   return {
+    /** Shared runtime snapshot (effective settings + provenance) for status surfaces. */
+    runtime,
     async handleMessage(msg: unknown): Promise<JsonRpcResponse | undefined> {
       const id = isRecord(msg) && (typeof msg.id === "string" || typeof msg.id === "number" || msg.id === null) ? msg.id : null;
       if (!isRecord(msg) || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") return rpcError(id, -32600, "Invalid Request");
@@ -301,17 +356,18 @@ export function createMcpServer(options: McpServerOptions = {}) {
           return response(id, { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "paradoc", version: "0.1.0" } });
         }
         if (msg.method === "ping") return response(id, {});
-        if (msg.method === "tools/list") return response(id, { tools: [PARADOC_READ_TOOL, PARADOC_WEB_READ_TOOL] });
+        if (msg.method === "tools/list") return response(id, { tools: TOOLS.map((tool) => tool.definition) });
         if (msg.method === "tools/call") {
-          if (isRecord(msg.params) && msg.params.name === "paradoc_web_read") {
-            return response(id, await handleParaDocWebRead(msg.params.arguments, { env, interceptor: interceptorFor(), webFetchOptions: options.webFetchOptions }));
-          }
-          if (!isRecord(msg.params) || msg.params.name !== "paradoc_read") return rpcError(id, -32602, "Invalid params");
-          return response(id, await handleParaDocRead(msg.params.arguments, { cwd, env, interceptor: interceptorFor(), maxFileBytes: options.maxFileBytes, pdfExtractor: options.pdfExtractor }));
+          const params = isRecord(msg.params) ? msg.params : undefined;
+          const name = params && typeof params.name === "string" ? params.name : undefined;
+          const tool = name === undefined ? undefined : TOOLS.find((entry) => entry.definition.name === name);
+          // The per-root interceptor is built here, on the first tool call only: startup stays O(1).
+          if (!tool) return rpcError(id, -32602, "Invalid params");
+          return response(id, await tool.handler(params?.arguments, context(tool.usesInterceptor === true)));
         }
         return rpcError(id, -32601, "Method not found");
       } catch (error) {
-        log("error", "request handling failed", { detail: error instanceof Error ? error.message : String(error) });
+        log("error", "request handling failed", { detail: errorMessage(error) });
         return rpcError(id, -32603, "Internal error");
       }
     },

@@ -1,0 +1,766 @@
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { DocumentKind } from "../core/document.js";
+import type { JudgeMode } from "../core/judge.js";
+import type { FallbackReason } from "../core/models.js";
+import type { PdfExtractor } from "../core/pdf.js";
+import type { LookupFn, WebTransport, WebTransportResponse } from "../core/web-fetch.js";
+
+/** Corpus source types map 1:1 onto the interceptor's document classification. */
+export type SourceType = DocumentKind;
+
+export type ExpectedOutcome = "intercept" | "passthrough" | `fallback:${FallbackReason}`;
+
+export interface GoldRange {
+  startLine: number;
+  endLine: number;
+}
+
+/** Per-item interceptor overrides. Hosts apply these instead of ambient config so runs stay comparable. */
+export interface CorpusTuning {
+  thresholdLines?: number;
+  minTokens?: number;
+  thresholdTokens?: number;
+  maxFileBytes?: number;
+  pdfMaxChars?: number;
+  pdfTimeoutMs?: number;
+  timeoutMs?: number;
+  judge?: JudgeMode;
+  chunkLines?: number;
+  chunkOverlapLines?: number;
+  webMaxBytes?: number;
+  webMaxRedirects?: number;
+}
+
+export interface CorpusItem {
+  id: string;
+  sourceType: SourceType;
+  kind: "file" | "web";
+  question: string;
+  expected: ExpectedOutcome;
+  /** Line ranges (1-based, inclusive) the generator wrote the answer into. */
+  goldRanges?: GoldRange[];
+  /** Substrings that must appear in a correct answer. */
+  goldNeedles: string[];
+  tuning?: CorpusTuning;
+  /** Set when the item is an explicit ranged read, which hosts must bypass. */
+  ranged?: { startLine: number; endLine: number };
+  notes?: string;
+}
+
+export interface FileCorpusItem extends CorpusItem {
+  kind: "file";
+  /** Absolute path of the materialized fixture. */
+  path: string;
+  /** Injected extractor for PDF fixtures that must not depend on a real pdftotext. */
+  pdfExtractor?: PdfExtractor;
+}
+
+export interface WebCorpusItem extends CorpusItem {
+  kind: "web";
+  url: string;
+  html: string;
+  transport: WebTransport;
+  resolveHost: LookupFn;
+}
+
+export interface SkippedCorpusItem {
+  id: string;
+  sourceType: SourceType;
+  reason: "skipped:pdftotext-missing";
+}
+
+export type SerializedCorpusItem = CorpusItem & { path?: string; url?: string };
+
+export interface CorpusManifest {
+  items: SerializedCorpusItem[];
+  skipped: SkippedCorpusItem[];
+}
+
+export interface MaterializedCorpus {
+  dir: string;
+  items: Array<FileCorpusItem | WebCorpusItem>;
+  skipped: SkippedCorpusItem[];
+  /** JSON-safe view of the manifest; deterministic across materializations. */
+  manifest: CorpusManifest;
+}
+
+export interface MaterializeOptions {
+  /** Override the pdftotext probe (tests force the skip path). */
+  hasPdftotext?: boolean;
+}
+
+/** Repo fixture copied verbatim so a real documentation file is part of the corpus. */
+const ATLAS_FIXTURE = fileURLToPath(new URL("../../docs/fixtures/large-paradoc-test.md", import.meta.url));
+
+/** Context lines the generator and the simulated model both agree on. */
+export const NEEDLE_CONTEXT = 1;
+
+function probePdftotext(): boolean {
+  try {
+    execFileSync("pdftotext", ["-v"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Locate each needle in the generated lines and return the merged gold ranges around it. */
+export function goldRangesFor(lines: string[], needles: readonly string[], context = NEEDLE_CONTEXT): GoldRange[] {
+  const ranges: GoldRange[] = [];
+  for (const needle of needles) {
+    const index = lines.findIndex((line) => line.includes(needle));
+    if (index < 0) throw new Error(`corpus: needle "${needle}" is not present in the generated fixture`);
+    ranges.push({
+      startLine: Math.max(1, index + 1 - context),
+      endLine: Math.min(lines.length, index + 1 + context),
+    });
+  }
+  ranges.sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+  const merged: GoldRange[] = [];
+  for (const range of ranges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.startLine <= previous.endLine + 1) {
+      previous.endLine = Math.max(previous.endLine, range.endLine);
+      continue;
+    }
+    merged.push({ ...range });
+  }
+  return merged;
+}
+
+// ── Fixture generators (deterministic: no timestamps, no randomness) ─────────
+
+const SOURCE_SECTIONS = [
+  "RetryLedger",
+  "ChargeWindow",
+  "QuotaMeter",
+  "LedgerSnapshot",
+  "RetryBudget",
+  "BackpressureGate",
+  "AuditTrail",
+  "RestorePlanner",
+] as const;
+
+/** Multi-section TypeScript-shaped source file; the answer sits in the RetryBudget section. */
+export function sourceFixtureLines(): string[] {
+  const lines: string[] = [
+    "// billing/retry_ledger.ts",
+    "// Synthetic multi-section source fixture generated by the value harness.",
+    'import { Clock, createTimer } from "./clock.js";',
+    'import type { LedgerEntry, Window } from "./types.js";',
+    "",
+  ];
+  for (const [index, name] of SOURCE_SECTIONS.entries()) {
+    lines.push(`/** Section ${index + 1}: ${name} coordinates one billing pipeline stage. */`);
+    lines.push(`export class ${name} {`);
+    lines.push("  private readonly clock: Clock;");
+    lines.push("  private readonly window: Window;");
+    lines.push("");
+    lines.push("  constructor(clock: Clock, window: Window) {");
+    lines.push("    this.clock = clock;");
+    lines.push("    this.window = window;");
+    lines.push("  }");
+    lines.push("");
+    for (let step = 1; step <= 12; step++) {
+      if (name === "RetryBudget" && step === 7) {
+        lines.push("  // retry floor: seven attempts per window before the ledger quarantines the entry");
+      }
+      lines.push(`  /** Step ${step} of the ${name} pipeline: advance the cursor and record the delta. */`);
+      lines.push(`  step${step}(entry: LedgerEntry): number {`);
+      lines.push("    const delta = entry.amount - this.window.base;");
+      lines.push("    this.window.cursor += delta;");
+      lines.push("    return delta;");
+      lines.push("  }");
+      lines.push("");
+    }
+    lines.push("}");
+    lines.push("");
+  }
+  return lines;
+}
+
+/** Very wide lines: few lines but a large estimated token count, so thresholdTokens does the work. */
+export function wideLineFixtureLines(): string[] {
+  const lines: string[] = [
+    "// billing/wide_report.ts",
+    "// One very long line per report row; the file stays under thresholdLines but not under thresholdTokens.",
+  ];
+  for (let row = 1; row <= 40; row++) {
+    const cells = Array.from(
+      { length: 20 },
+      (_, c) => `row${row}_cell${c + 1}=metric_${row}_${c + 1}_payload_padding_${String(row * 100 + c).padStart(6, "0")}`,
+    ).join(";");
+    lines.push(`export const reportRow${row} = "${cells}";`);
+  }
+  lines.push('export const reportChecksum = "wide-line-checksum-7f3ab1";');
+  return lines;
+}
+
+/** Multi-section markdown document; the answer sits in the failover section. */
+export function textDocumentFixtureLines(): string[] {
+  const lines: string[] = [
+    "# Warehouse Operations Handbook",
+    "",
+    "Synthetic multi-section documentation fixture generated by the value harness.",
+    "",
+  ];
+  const sections = ["Overview", "Capacity", "Scheduling", "Failover", "Retention", "Auditing"];
+  for (const [index, section] of sections.entries()) {
+    lines.push(`## ${index + 1}. ${section}`);
+    lines.push("");
+    lines.push(`The ${section.toLowerCase()} chapter describes the warehouse control plane for platform operators.`);
+    lines.push("");
+    for (let part = 1; part <= 30; part++) {
+      if (section === "Failover" && part === 9) {
+        lines.push("During a cell failover the scheduler drains warm pools in thirty seconds and re-points traffic to the standby cell.");
+      } else {
+        lines.push(`${section} guidance part ${part}: keep the control plane observable and record every automated action.`);
+      }
+      lines.push("");
+    }
+  }
+  return lines;
+}
+
+/** Hand-built minimal PDF: Helvetica Tj text operators plus a valid xref. */
+export function buildPdf(pages: string[][], trailer = ""): Buffer {
+  const objects: string[] = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    `<< /Type /Pages /Kids [${pages.map((_, index) => `${4 + index * 2} 0 R`).join(" ")}] /Count ${pages.length} >>`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  for (const [index, pageLines] of pages.entries()) {
+    const escaped = (text: string): string => text.replace(/([\\()])/g, "\\$1");
+    const stream = pageLines.length
+      ? `BT /F1 11 Tf 14 TL 56 760 Td\n${pageLines.map((text) => `(${escaped(text)}) Tj T*`).join("\n")}\nET`
+      : "";
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 3 0 R >> >> /MediaBox [0 0 612 792] /Contents ${5 + index * 2} 0 R >>`,
+    );
+    objects.push(`<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`);
+  }
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R ${trailer}>>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
+}
+
+/** 14pt leading on a 792pt page fits ~54 lines before text leaves the MediaBox. */
+export const PDF_PAGE_LINES = 53;
+export const PDF_PAGES = 8;
+
+/** Eight dense pages: enough extracted text to clear the line-count interception path. */
+export function pdfFixturePages(): string[][] {
+  return Array.from({ length: PDF_PAGES }, (_, pageIndex) => {
+    const page = pageIndex + 1;
+    const lines: string[] = [];
+    for (let index = 1; index <= PDF_PAGE_LINES; index++) {
+      if (page === 4 && index === 27) {
+        lines.push("Billing rollback: freeze charges with the billing.write.freeze flag first.");
+        continue;
+      }
+      lines.push(`Atlas runbook page ${page} line ${index}: three cells stay warm in every region.`);
+    }
+    return lines;
+  });
+}
+
+const WEB_SECTIONS = ["Fetch rules", "Redirects", "Content types", "Size limits", "Condensation", "Escape hatch"];
+
+/** Docs-page shape: nav chrome the converter drops, plus prose the model must select from. */
+export function webFixtureHtml(): string {
+  const parts: string[] = [
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>ParaDoc Web Reads</title></head><body>',
+    '<nav class="sidebar"><a href="/docs">Docs</a><a href="/api">API</a><a href="/blog">Blog</a></nav>',
+    '<main><h1>ParaDoc web reads</h1>',
+  ];
+  for (const [index, section] of WEB_SECTIONS.entries()) {
+    parts.push(`<h2>${index + 1}. ${section}</h2>`);
+    for (let paragraph = 1; paragraph <= 45; paragraph++) {
+      if (section === "Escape hatch" && paragraph === 20) {
+        parts.push("<p>Escape hatch: use start_line and end_line for the exact range.</p>");
+        continue;
+      }
+      parts.push(`<p>${section} paragraph ${paragraph}: the converter keeps documentation prose and drops page chrome so line ranges stay meaningful.</p>`);
+    }
+  }
+  parts.push('</main><footer><span>Footer chrome that must not reach the model.</span></footer></body></html>');
+  return parts.join("\n");
+}
+
+function cannedTransport(html: string, headers: Record<string, string> = { "content-type": "text/html" }): WebTransport {
+  return async () =>
+    ({
+      status: 200,
+      headers,
+      body: (async function* () {
+        yield Buffer.from(html);
+      })(),
+    }) satisfies WebTransportResponse;
+}
+
+const publicHost: LookupFn = async () => ["93.184.216.34"];
+
+// ── Manifest ────────────────────────────────────────────────────────────────
+
+interface ItemSpec {
+  item: CorpusItem;
+  write?: (dir: string) => string;
+  html?: string;
+  url?: string;
+  transport?: WebTransport;
+  resolveHost?: LookupFn;
+  pdfExtractor?: PdfExtractor;
+  needsPdftotext?: boolean;
+}
+
+const SOURCE_NEEDLE = "seven attempts per window before the ledger quarantines the entry";
+const WIDE_NEEDLE = "wide-line-checksum-7f3ab1";
+const TEXT_NEEDLE = "drains warm pools in thirty seconds and re-points traffic to the standby cell";
+const ATLAS_NEEDLE = "billing.write.freeze` flag before traffic movement";
+const PDF_NEEDLE = "billing.write.freeze flag first";
+const WEB_NEEDLE = "start_line and end_line for the exact range";
+
+function specs(): ItemSpec[] {
+  const sourceLines = sourceFixtureLines();
+  const wideLines = wideLineFixtureLines();
+  const textLines = textDocumentFixtureLines();
+  const pdfPages = pdfFixturePages();
+  const html = webFixtureHtml();
+
+  const oversizedExtractor: PdfExtractor = async () => ({
+    ok: true,
+    pages: 1,
+    text: Array.from({ length: 400 }, (_, index) => `extracted line ${index + 1} of an oversized document`).join("\n"),
+  });
+  const unavailableExtractor: PdfExtractor = async () => ({
+    ok: false,
+    reason: "extractor-unavailable",
+    error: "pdf text unavailable",
+    detail: "pdftotext not found on PATH (harness-injected)",
+  });
+
+  return [
+    // ── source ──
+    {
+      item: {
+        id: "src-retry-ledger",
+        sourceType: "source",
+        kind: "file",
+        question: "How many attempts does the retry budget allow before an entry is quarantined?",
+        expected: "intercept",
+        goldNeedles: [SOURCE_NEEDLE],
+        goldRanges: goldRangesFor(sourceLines, [SOURCE_NEEDLE]),
+      },
+      write: (dir) => writeFixture(dir, "src/billing/retry_ledger.ts", sourceLines.join("\n")),
+    },
+    {
+      item: {
+        id: "src-wide-report",
+        sourceType: "source",
+        kind: "file",
+        question: "What checksum does the wide report export?",
+        expected: "intercept",
+        goldNeedles: [WIDE_NEEDLE],
+        goldRanges: goldRangesFor(wideLines, [WIDE_NEEDLE]),
+        notes: "Under thresholdLines but past thresholdTokens: exercises the estimated-size path.",
+      },
+      write: (dir) => writeFixture(dir, "src/billing/wide_report.ts", wideLines.join("\n")),
+    },
+    {
+      item: {
+        id: "src-tiny-helper",
+        sourceType: "source",
+        kind: "file",
+        question: "What does this helper do?",
+        expected: "passthrough",
+        goldNeedles: ["tiny helper"],
+        notes: "Below every size floor: the host output must stay untouched.",
+      },
+      write: (dir) =>
+        writeFixture(
+          dir,
+          "src/billing/tiny_helper.ts",
+          ['// tiny helper', "export const round = (n: number): number => Math.round(n);", ""].join("\n"),
+        ),
+    },
+    {
+      item: {
+        id: "src-too-large",
+        sourceType: "source",
+        kind: "file",
+        question: "What is in this oversized file?",
+        expected: "fallback:file-too-large",
+        goldNeedles: [],
+        tuning: { maxFileBytes: 4096 },
+        notes: "File size guard must reject before any read.",
+      },
+      write: (dir) => writeFixture(dir, "src/billing/too_large.ts", `${"// oversized payload\n".repeat(600)}`),
+    },
+    {
+      item: {
+        id: "src-binary",
+        sourceType: "source",
+        kind: "file",
+        question: "What is in this binary file?",
+        expected: "fallback:binary-file",
+        goldNeedles: [],
+        notes: "NUL byte in the sniff window must stop the read.",
+      },
+      write: (dir) => {
+        const path = join(dir, "src", "billing", "blob.bin");
+        mkdirSync(join(path, ".."), { recursive: true });
+        // NUL bytes, not 0x01: the file guard sniffs for NUL in the first 8192 bytes.
+        writeFileSync(path, Buffer.concat([Buffer.from("// binary payload\n"), Buffer.alloc(2048, 0), Buffer.from("// tail\n")]));
+        return path;
+      },
+    },
+    {
+      item: {
+        id: "src-missing",
+        sourceType: "source",
+        kind: "file",
+        question: "What is in this missing file?",
+        expected: "fallback:file-not-found",
+        goldNeedles: [],
+        notes: "Path is deliberately never written.",
+      },
+    },
+    {
+      item: {
+        id: "src-ranged",
+        sourceType: "source",
+        kind: "file",
+        question: "Show lines 10-30 exactly.",
+        expected: "passthrough",
+        goldNeedles: [SOURCE_NEEDLE],
+        ranged: { startLine: 10, endLine: 30 },
+        notes: "Explicit ranges are the escape hatch and must never be condensed.",
+      },
+      write: (dir) => writeFixture(dir, "src/billing/ranged_ledger.ts", sourceLines.join("\n")),
+    },
+
+    // ── text-document ──
+    {
+      item: {
+        id: "doc-warehouse",
+        sourceType: "text-document",
+        kind: "file",
+        question: "What does the scheduler do during a cell failover?",
+        expected: "intercept",
+        goldNeedles: [TEXT_NEEDLE],
+        goldRanges: goldRangesFor(textLines, [TEXT_NEEDLE]),
+      },
+      write: (dir) => writeFixture(dir, "docs/warehouse-handbook.md", textLines.join("\n")),
+    },
+    {
+      item: {
+        id: "doc-atlas",
+        sourceType: "text-document",
+        kind: "file",
+        question: "What is the rollback procedure for the billing API?",
+        expected: "intercept",
+        goldNeedles: [ATLAS_NEEDLE],
+        notes: "Copied verbatim from docs/fixtures/large-paradoc-test.md; gold ranges are computed after the copy.",
+      },
+      write: (dir) => {
+        const path = join(dir, "docs", "atlas-ops-handbook.md");
+        mkdirSync(join(path, ".."), { recursive: true });
+        copyFileSync(ATLAS_FIXTURE, path);
+        return path;
+      },
+    },
+    {
+      item: {
+        id: "doc-small-note",
+        sourceType: "text-document",
+        kind: "file",
+        question: "What does this note say?",
+        expected: "passthrough",
+        goldNeedles: ["operational note"],
+      },
+      write: (dir) =>
+        writeFixture(dir, "docs/small-note.md", ["# Short operational note", "", "Nothing here is large enough to delegate.", ""].join("\n")),
+    },
+    {
+      item: {
+        id: "doc-missing",
+        sourceType: "text-document",
+        kind: "file",
+        question: "What does this missing handbook say?",
+        expected: "fallback:file-not-found",
+        goldNeedles: [],
+        notes: "Documentation path is deliberately never written.",
+      },
+    },
+
+    // ── pdf-text ──
+    {
+      item: {
+        id: "pdf-atlas-runbook",
+        sourceType: "pdf-text",
+        kind: "file",
+        question: "How must a billing API rollback be performed?",
+        expected: "intercept",
+        goldNeedles: [PDF_NEEDLE],
+        notes: "Gold ranges are omitted: extracted line numbers depend on pdftotext.",
+      },
+      write: (dir) => writeBinary(dir, "docs/atlas-runbook.pdf", buildPdf(pdfPages)),
+      needsPdftotext: true,
+    },
+    {
+      item: {
+        id: "pdf-encrypted",
+        sourceType: "pdf-text",
+        kind: "file",
+        question: "What is in this encrypted PDF?",
+        expected: "fallback:pdf-encrypted",
+        goldNeedles: [],
+        notes: "/Encrypt dictionary must be caught before extraction.",
+      },
+      write: (dir) => writeBinary(dir, "docs/encrypted.pdf", buildPdf([["encrypted page text"]], "/Encrypt 9 0 R")),
+    },
+    {
+      item: {
+        id: "pdf-no-text",
+        sourceType: "pdf-text",
+        kind: "file",
+        question: "What is in this image-only PDF?",
+        expected: "fallback:pdf-no-text",
+        goldNeedles: [],
+        notes: "No text operators: extraction yields nothing usable.",
+      },
+      write: (dir) => writeBinary(dir, "docs/no-text.pdf", buildPdf([[]])),
+      needsPdftotext: true,
+    },
+    {
+      item: {
+        id: "pdf-truncated",
+        sourceType: "pdf-text",
+        kind: "file",
+        question: "What is in this truncated PDF?",
+        expected: "fallback:pdf-malformed",
+        goldNeedles: [],
+        notes: "Header present, no xref or trailer.",
+      },
+      write: (dir) => {
+        const path = join(dir, "docs", "truncated.pdf");
+        mkdirSync(join(path, ".."), { recursive: true });
+        writeFileSync(path, "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>");
+        return path;
+      },
+      needsPdftotext: true,
+    },
+    {
+      item: {
+        id: "pdf-oversized",
+        sourceType: "pdf-text",
+        kind: "file",
+        question: "What is in this oversized PDF?",
+        expected: "fallback:pdf-too-large",
+        goldNeedles: [],
+        tuning: { pdfMaxChars: 2000 },
+        notes: "Injected extractor returns more text than pdfMaxChars allows.",
+      },
+      write: (dir) => writeBinary(dir, "docs/oversized.pdf", buildPdf([["oversized pdf payload"]])),
+      pdfExtractor: oversizedExtractor,
+    },
+    {
+      item: {
+        id: "pdf-extractor-unavailable",
+        sourceType: "pdf-text",
+        kind: "file",
+        question: "What is in this PDF without an extractor?",
+        expected: "fallback:extractor-unavailable",
+        goldNeedles: [],
+        notes: "Injected extractor reports the toolchain is missing.",
+      },
+      write: (dir) => writeBinary(dir, "docs/no-extractor.pdf", buildPdf([["page text"]])),
+      pdfExtractor: unavailableExtractor,
+    },
+
+    // ── web-page ──
+    {
+      item: {
+        id: "web-docs-guide",
+        sourceType: "web-page",
+        kind: "web",
+        question: "How do you request an exact converted range from a web read?",
+        expected: "intercept",
+        goldNeedles: [WEB_NEEDLE],
+        notes: "Canned transport and canned DNS; no network is used.",
+      },
+      url: "https://docs.example.com/paradoc/web-reads",
+      html,
+      transport: cannedTransport(html),
+      resolveHost: publicHost,
+    },
+    {
+      item: {
+        id: "web-loopback",
+        sourceType: "web-page",
+        kind: "web",
+        question: "What is on this loopback page?",
+        expected: "fallback:unsafe-url",
+        goldNeedles: [],
+        notes: "IP literal hosts are refused before any request.",
+      },
+      url: "http://127.0.0.1:8080/guide",
+      html: "<html><body><p>loopback</p></body></html>",
+      transport: cannedTransport("<html><body><p>loopback</p></body></html>"),
+      resolveHost: publicHost,
+    },
+    {
+      item: {
+        id: "web-non-html",
+        sourceType: "web-page",
+        kind: "web",
+        question: "What is on this page?",
+        expected: "fallback:unsupported-content-type",
+        goldNeedles: [],
+      },
+      url: "https://docs.example.com/diagram.png",
+      html: "PNG",
+      transport: cannedTransport("PNG", { "content-type": "image/png" }),
+      resolveHost: publicHost,
+    },
+    {
+      item: {
+        id: "web-redirect-loop",
+        sourceType: "web-page",
+        kind: "web",
+        question: "What is on this page?",
+        expected: "fallback:too-many-redirects",
+        goldNeedles: [],
+        tuning: { webMaxRedirects: 3 },
+      },
+      url: "https://docs.example.com/loop",
+      html: "",
+      transport: async (req) => ({
+        status: 302,
+        headers: { location: req.url.href },
+        body: (async function* () {
+          yield Buffer.from("");
+        })(),
+        close: () => undefined,
+      }),
+      resolveHost: publicHost,
+    },
+    {
+      item: {
+        id: "web-oversized",
+        sourceType: "web-page",
+        kind: "web",
+        question: "What is on this oversized page?",
+        expected: "fallback:content-too-large",
+        goldNeedles: [],
+        tuning: { webMaxBytes: 4096 },
+      },
+      url: "https://docs.example.com/huge",
+      html: "<html><body><p>huge</p></body></html>",
+      transport: cannedTransport("<html><body><p>huge</p></body></html>", {
+        "content-type": "text/html",
+        "content-length": String(64 * 1024),
+      }),
+      resolveHost: publicHost,
+    },
+  ];
+}
+
+function writeFixture(dir: string, relative: string, content: string): string {
+  const path = join(dir, relative);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, content, "utf8");
+  return path;
+}
+
+function writeBinary(dir: string, relative: string, content: Buffer): string {
+  const path = join(dir, relative);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, content);
+  return path;
+}
+
+/**
+ * Write every fixture into `dir` and return the manifest.
+ * Deterministic: the same options always produce byte-identical fixtures.
+ * PDF items that need a real pdftotext are reported in `skipped` when it is absent.
+ */
+export function materializeCorpus(dir: string, options: MaterializeOptions = {}): MaterializedCorpus {
+  const hasPdftotext = options.hasPdftotext ?? probePdftotext();
+  const items: Array<FileCorpusItem | WebCorpusItem> = [];
+  const skipped: SkippedCorpusItem[] = [];
+
+  for (const spec of specs()) {
+    if (spec.needsPdftotext && !hasPdftotext) {
+      skipped.push({ id: spec.item.id, sourceType: spec.item.sourceType, reason: "skipped:pdftotext-missing" });
+      continue;
+    }
+    if (spec.item.kind === "file") {
+      // A missing-file fixture is deliberately never written; the path is still recorded.
+      const path = spec.write ? spec.write(dir) : join(dir, "src", "billing", "missing.ts");
+      const item: FileCorpusItem = {
+        ...spec.item,
+        kind: "file",
+        path,
+        ...(spec.pdfExtractor ? { pdfExtractor: spec.pdfExtractor } : {}),
+      };
+      // Copied fixtures (the Atlas handbook) get their gold ranges from the bytes actually written.
+      // PDF fixtures are excluded: their gold line numbers belong to the *extracted* text, which only
+      // pdftotext can produce, so a range over the raw bytes would be meaningless.
+      if (!item.goldRanges && item.goldNeedles.length > 0 && spec.write && item.sourceType !== "pdf-text") {
+        const written = readLines(path);
+        if (written) item.goldRanges = goldRangesFor(written, item.goldNeedles);
+      }
+      items.push(item);
+      continue;
+    }
+    const url = spec.url ?? "https://docs.example.com/";
+    const html = spec.html ?? "";
+    items.push({
+      ...spec.item,
+      kind: "web",
+      url,
+      html,
+      transport: spec.transport ?? cannedTransport(html),
+      resolveHost: spec.resolveHost ?? publicHost,
+    });
+  }
+
+  return { dir, items, skipped, manifest: { items: items.map((item) => serializedItem(dir, item)), skipped } };
+}
+
+function readLines(path: string): string[] | undefined {
+  try {
+    return readFileSync(path, "utf8").split("\n");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Manifest form: JSON-safe (no injected functions) and dir-relative, so two
+ * materializations in two different temp dirs compare byte-for-byte.
+ */
+function serializedItem(dir: string, item: FileCorpusItem | WebCorpusItem): SerializedCorpusItem {
+  if (item.kind === "file") {
+    const { pdfExtractor, ...rest } = item;
+    void pdfExtractor;
+    return { ...rest, path: relative(dir, item.path) };
+  }
+  const { transport, resolveHost, html, ...rest } = item;
+  void transport;
+  void resolveHost;
+  void html;
+  return rest;
+}

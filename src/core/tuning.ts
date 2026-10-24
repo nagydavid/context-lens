@@ -1,6 +1,7 @@
 import { configPath, readConfigObject } from "./config.js";
 import type { ConfigOptions } from "./config.js";
 import type { JudgeMode } from "./judge.js";
+import { DEFAULT_PDF_MAX_CHARS, DEFAULT_PDF_TIMEOUT_MS } from "./pdf.js";
 
 export interface TuningSettings {
   thresholdLines: number;
@@ -10,6 +11,14 @@ export interface TuningSettings {
   chunkOverlapLines: number;
   judge: JudgeMode;
   cacheMaxEntries: number;
+  /** Skip delegation under this estimated size even past thresholdLines. */
+  minTokens: number;
+  /** Intercept at this estimated size even under thresholdLines. */
+  thresholdTokens: number;
+  /** Maximum time allowed for PDF text extraction. */
+  pdfTimeoutMs: number;
+  /** Maximum extracted PDF text length. */
+  pdfMaxChars: number;
 }
 
 export type TuningSource = "explicit" | "env" | "project" | "global" | "default";
@@ -22,6 +31,10 @@ export const DEFAULT_TUNING: Readonly<TuningSettings> = Object.freeze({
   chunkOverlapLines: 0,
   judge: "off",
   cacheMaxEntries: 64,
+  minTokens: 1000,
+  thresholdTokens: 8000,
+  pdfTimeoutMs: DEFAULT_PDF_TIMEOUT_MS,
+  pdfMaxChars: DEFAULT_PDF_MAX_CHARS,
 });
 
 export interface TuningOptions extends ConfigOptions {
@@ -29,7 +42,15 @@ export interface TuningOptions extends ConfigOptions {
 }
 
 type Key = keyof TuningSettings;
+/** Public alias so the write seam (and hosts) can enumerate validated keys. */
+export type TuningKey = Key;
 const KEYS = Object.keys(DEFAULT_TUNING) as Key[];
+/** Every tuning key accepted by loadTuning, saveTuning and clearTuning. */
+export const TUNING_KEYS: readonly TuningKey[] = KEYS;
+
+export function isTuningKey(value: unknown): value is TuningKey {
+  return typeof value === "string" && KEYS.includes(value as Key);
+}
 const JUDGE_MODES: readonly string[] = ["off", "low-confidence", "always"];
 const MIN: Record<Exclude<Key, "judge">, number> = {
   thresholdLines: 1,
@@ -38,6 +59,10 @@ const MIN: Record<Exclude<Key, "judge">, number> = {
   chunkLines: 0,
   chunkOverlapLines: 0,
   cacheMaxEntries: 0,
+  minTokens: 1,
+  thresholdTokens: 1,
+  pdfTimeoutMs: 1,
+  pdfMaxChars: 1,
 };
 
 const ENV_NAMES: Record<Key, string> = {
@@ -48,11 +73,15 @@ const ENV_NAMES: Record<Key, string> = {
   chunkOverlapLines: "PARADOC_CHUNK_OVERLAP",
   judge: "PARADOC_JUDGE",
   cacheMaxEntries: "PARADOC_CACHE",
+  minTokens: "PARADOC_MIN_TOKENS",
+  thresholdTokens: "PARADOC_THRESHOLD_TOKENS",
+  pdfTimeoutMs: "PARADOC_PDF_TIMEOUT_MS",
+  pdfMaxChars: "PARADOC_PDF_MAX_CHARS",
 };
 
-type Check = { ok: true; value: number | JudgeMode } | { ok: false; reason: string };
+export type TuningCheck = { ok: true; value: number | JudgeMode } | { ok: false; reason: string };
 
-function check(key: Key, value: unknown, fromEnv: boolean): Check {
+function check(key: Key, value: unknown, fromEnv: boolean): TuningCheck {
   if (key === "judge") {
     return typeof value === "string" && JUDGE_MODES.includes(value)
       ? { ok: true, value: value as JudgeMode }
@@ -69,6 +98,11 @@ function check(key: Key, value: unknown, fromEnv: boolean): Check {
     return { ok: false, reason: `expected an integer >= ${min}` };
   }
   return { ok: true, value: n };
+}
+
+/** Validate one candidate value with the same rules loadTuning applies to config-file values. */
+export function validateTuningValue(key: TuningKey, value: unknown): TuningCheck {
+  return check(key, value, false);
 }
 
 function safeWarn(options: ConfigOptions, message: string): void {
@@ -160,6 +194,10 @@ export function tuningToInterceptorOptions(settings: TuningSettings): {
   timeoutMs: number;
   chunkLines: number;
   chunkOverlapLines: number;
+  minTokens: number;
+  thresholdTokens: number;
+  pdfTimeoutMs: number;
+  pdfMaxChars: number;
   judge: { mode: JudgeMode };
 } {
   return {
@@ -167,6 +205,10 @@ export function tuningToInterceptorOptions(settings: TuningSettings): {
     timeoutMs: settings.timeoutMs,
     chunkLines: settings.chunkLines,
     chunkOverlapLines: settings.chunkOverlapLines,
+    minTokens: settings.minTokens,
+    thresholdTokens: settings.thresholdTokens,
+    pdfTimeoutMs: settings.pdfTimeoutMs,
+    pdfMaxChars: settings.pdfMaxChars,
     judge: { mode: settings.judge },
   };
 }

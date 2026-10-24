@@ -21,6 +21,7 @@ function run(args: string[], env: NodeJS.ProcessEnv = gateOffEnv()) {
 const harnesses = [
   { script: "scripts/e2e-opencode.mjs", scenario: "cache" },
   { script: "scripts/e2e-copilot.mjs", scenario: "cache-repeat" },
+  { script: "scripts/e2e-commands.mjs", scenario: "lifecycle" },
 ];
 
 describe("live harness scripts (hermetic guard)", () => {
@@ -35,6 +36,9 @@ describe("live harness scripts (hermetic guard)", () => {
       ok(result.stdout.includes("SKIP"), result.stdout);
       if (script.includes("copilot")) {
         strictEqual(result.stdout.trim(), "SKIP copilot e2e (set PARADOC_E2E=1)");
+      }
+      if (script.includes("commands")) {
+        strictEqual(result.stdout.trim(), "SKIP command e2e (set PARADOC_E2E=1)");
       }
     });
 

@@ -1,21 +1,22 @@
-import { appendFileSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { statSync } from "node:fs";
+import { resolve } from "node:path";
 import {
-  LruResultCache,
-  ModelSelector,
-  ReadInterceptor,
-  eventLogLevel,
-  loadTuning,
-  tuningToInterceptorOptions,
-  type ConfigOptions,
-  type InterceptionEvent,
-  type JudgeOptions,
-  type PdfExtractor,
-  type ResultCache,
-  type SubagentRunner,
-  type TuningSettings,
+  createDiagnostics,
+  createHostRuntime,
+  displayPathFor,
+  errorMessage,
+  explicitFromOptions,
+  isRecord,
+} from "../core/host-runtime.js";
+import { renderInterceptionResult } from "../core/render.js";
+import type { ParadocStatus } from "../core/status.js";
+import type {
+  ConfigOptions,
+  JudgeOptions,
+  PdfExtractor,
+  ResultCache,
+  SubagentRunner,
 } from "../core/index.js";
-import { renderInterceptionResult } from "../opencode/render.js";
 import { createCopilotRunner } from "./subagent.js";
 import type {
   CopilotHooks,
@@ -26,8 +27,6 @@ import type {
 
 export const COPILOT_HINT =
   "Note: this view was condensed by paradoc. Re-run view with an explicit view_range to see exact or full content; ranged views are never condensed.";
-
-type LogLevel = "debug" | "info" | "warn" | "error";
 
 export interface CopilotHooksOptions {
   runner?: SubagentRunner;
@@ -52,27 +51,6 @@ export interface CopilotHooksOptions {
 const MAX_TRACKED_SESSIONS = 100;
 const MAX_TASK_CHARS = 2000;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function describeEvent(event: InterceptionEvent): string {
-  const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
-  const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
-  if (event.intercepted) {
-    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${event.cacheHit ? ", cacheHit=true" : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
-  }
-  if (event.fallbackReason) {
-    return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
-  }
-  return `passthrough ${event.filePath} (${event.lineCount} lines)`;
-}
-
-function displayPathFor(filePath: string, root: string): string {
-  const rel = relative(root, resolve(root, filePath));
-  return rel === "" || rel.startsWith("..") || isAbsolute(rel) ? filePath : rel;
-}
-
 function hasRangeArgument(args: Record<string, unknown>): boolean {
   return Object.keys(args).some((key) =>
     /range/i.test(key) || ["start_line", "startLine", "end_line", "endLine", "offset", "limit"].includes(key),
@@ -82,98 +60,57 @@ function hasRangeArgument(args: Record<string, unknown>): boolean {
 /** Creates probe-shaped Copilot hooks which never replace a host view on failure. */
 export function createCopilotHooks(
   options: CopilotHooksOptions = {},
-): CopilotHooks & { setSession(session: CopilotSessionLike): void } {
+): CopilotHooks & {
+  setSession(session: CopilotSessionLike): void;
+  getStatus(projectRoot: string): Promise<ParadocStatus>;
+} {
   const env = options.env ?? process.env;
   let session: CopilotSessionLike | undefined;
   const lastPrompt = new Map<string, string>();
 
-  const log = (level: LogLevel, message: string, extra: Record<string, unknown> = {}): void => {
-    const record = { ts: new Date().toISOString(), level, message, ...extra };
-    const line = `[paradoc] ${level}: ${message} ${JSON.stringify(extra)}`;
-    try {
-      if (options.logSink) options.logSink(line, record);
-      else process.stderr.write(`${line}\n`);
-    } catch {
-      // Logging must never alter host behaviour.
-    }
-    try {
-      const pending = session?.log?.(line, record);
-      void Promise.resolve(pending).catch(() => undefined);
-    } catch {
-      // Host session logging is best-effort.
-    }
-    if (env.PARADOC_LOG_FILE) {
+  // Host delivery is injected; session.log stays independent of the caller's sink.
+  const diagnostics = createDiagnostics({
+    logFile: env.PARADOC_LOG_FILE,
+    sink: (line, record) => {
       try {
-        appendFileSync(env.PARADOC_LOG_FILE, `${JSON.stringify(record)}\n`, "utf8");
+        if (options.logSink) options.logSink(line, record);
+        else process.stderr.write(`${line}\n`);
       } catch {
-        // Diagnostic persistence is best-effort.
+        // Logging must never alter host behaviour.
       }
-    }
-  };
-
-  const selectors = new Map<string, ModelSelector>();
-  const selectorFor = (workingDirectory: string): ModelSelector => {
-    let selector = selectors.get(workingDirectory);
-    if (!selector) {
-      selector = new ModelSelector({
-        ...options.configOptions,
-        projectRoot: workingDirectory,
-        onWarning: (message) => log("warn", message),
-      });
-      selectors.set(workingDirectory, selector);
-    }
-    return selector;
-  };
-
-  const explicit: Partial<TuningSettings> = {};
-  if (options.thresholdLines !== undefined) explicit.thresholdLines = options.thresholdLines;
-  if (options.timeoutMs !== undefined) explicit.timeoutMs = options.timeoutMs;
-  if (options.concurrency !== undefined) explicit.concurrency = options.concurrency;
-  if (options.chunkLines !== undefined) explicit.chunkLines = options.chunkLines;
-  if (options.chunkOverlapLines !== undefined) explicit.chunkOverlapLines = options.chunkOverlapLines;
-  if (options.judge?.mode !== undefined) explicit.judge = options.judge.mode;
-  const tuningEnv = options.configOptions?.env ?? options.env ?? process.env;
-  const tuningFor = (projectRoot: string): TuningSettings => loadTuning({
-    ...options.configOptions,
-    env: tuningEnv,
-    projectRoot,
-    explicit,
-    onWarning: (message) => log("warn", message),
-  }).settings;
+      try {
+        const pending = session?.log?.(line, record);
+        void Promise.resolve(pending).catch(() => undefined);
+      } catch {
+        // Host session logging is best-effort.
+      }
+    },
+  });
+  const log = diagnostics.log;
 
   // configOptions.projectRoot only picks the project for process-scoped knobs; per-view tuning uses the view workingDirectory.
-  const processTuning = tuningFor(options.configOptions?.projectRoot ?? process.cwd());
-  const runner = options.runner ?? createCopilotRunner({ concurrency: processTuning.concurrency });
-  const cache = options.cache ??
-    (processTuning.cacheMaxEntries > 0 ? new LruResultCache({ maxEntries: processTuning.cacheMaxEntries }) : undefined);
-  const interceptors = new Map<string, ReadInterceptor>();
-  const interceptorFor = (workingDirectory: string): ReadInterceptor => {
-    let interceptor = interceptors.get(workingDirectory);
-    if (!interceptor) {
-      interceptor = new ReadInterceptor({
-        runner,
-        cache,
-        modelResolver: selectorFor(workingDirectory).resolve,
-        ...tuningToInterceptorOptions(tuningFor(workingDirectory)),
-        maxFileBytes: options.maxFileBytes,
-        maxRetries: options.maxRetries,
-        retryDelayMs: options.retryDelayMs,
-        ...(options.judge ? { judge: options.judge } : {}),
-        ...(options.pdfExtractor ? { pdfExtractor: options.pdfExtractor } : {}),
-        logger: (event) => log(
-          eventLogLevel(event),
-          describeEvent(event),
-          { ...event, stats: interceptor!.stats() },
-        ),
-      });
-      interceptors.set(workingDirectory, interceptor);
-    }
-    return interceptor;
-  };
+  const runtime = createHostRuntime({
+    projectRoot: options.configOptions?.projectRoot ?? process.cwd(),
+    configOptions: options.configOptions,
+    env,
+    explicit: explicitFromOptions(options),
+    log,
+    runner: options.runner ?? ((settings) => createCopilotRunner({ concurrency: settings.concurrency })),
+    cache: options.cache,
+    pdfExtractor: options.pdfExtractor,
+    judge: options.judge,
+    maxFileBytes: options.maxFileBytes,
+    maxRetries: options.maxRetries,
+    retryDelayMs: options.retryDelayMs,
+  });
 
   return {
     setSession(nextSession) {
       session = nextSession;
+    },
+
+    getStatus(projectRoot) {
+      return runtime.getStatus(projectRoot);
     },
 
     async onUserPromptSubmitted(input) {
@@ -187,7 +124,7 @@ export function createCopilotHooks(
           if (oldest !== undefined) lastPrompt.delete(oldest);
         }
       } catch (error) {
-        log("error", `prompt capture failed: ${error instanceof Error ? error.message : String(error)}`);
+        log("error", `prompt capture failed: ${errorMessage(error)}`);
       }
     },
 
@@ -200,7 +137,7 @@ export function createCopilotHooks(
         if (typeof path !== "string" || path.trim() === "") return undefined;
         if (input.toolResult?.resultType !== "success") return undefined;
         if (hasRangeArgument(input.toolArgs)) {
-          interceptorFor(input.workingDirectory).noteBypass();
+          runtime.interceptorFor(input.workingDirectory).noteBypass();
           return undefined;
         }
         if ((input.toolResult.toolTelemetry as { properties?: { viewType?: string } } | undefined)?.properties?.viewType === "directory") return undefined;
@@ -212,7 +149,7 @@ export function createCopilotHooks(
           // The interceptor will classify unreadable or missing files as a fallback.
         }
 
-        const result = await interceptorFor(input.workingDirectory).intercept({
+        const result = await runtime.interceptorFor(input.workingDirectory).intercept({
           filePath: resolved,
           projectRoot: input.workingDirectory,
           agentContext: { currentTask: lastPrompt.get(input.sessionId) },
@@ -227,7 +164,7 @@ export function createCopilotHooks(
         };
         return { modifiedResult };
       } catch (error) {
-        log("error", `view interception failed: ${error instanceof Error ? error.message : String(error)}`, {
+        log("error", `view interception failed: ${errorMessage(error)}`, {
           tool: input.toolName,
           sessionId: input.sessionId,
         });

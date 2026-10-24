@@ -5,12 +5,16 @@ import { join } from "path";
 import { describe, it } from "node:test";
 import { LruResultCache } from "./cache.js";
 import { FakeSubagentRunner } from "./fake-runner.js";
-import { interceptRead, ReadInterceptor } from "./interceptor.js";
-import type { InterceptionEvent } from "./interceptor.js";
+import { ReadInterceptor } from "./interceptor.js";
+import type { InterceptOptions, InterceptionEvent } from "./interceptor.js";
+import type { ReadRequest, InterceptionResult } from "./models.js";
 import { configPath } from "./config.js";
 import { ModelSelector } from "./model-selector.js";
 
 const fixturePath = (name: string) => join(tmpdir(), `paradoc-${name}-${Date.now()}.txt`);
+// Local seam: every test drives the interceptor through its public class API.
+const readWith = (request: ReadRequest, options?: InterceptOptions): Promise<InterceptionResult> =>
+  new ReadInterceptor(options).intercept(request);
 const largeContent = Array.from({ length: 400 }, (_, index) =>
   index + 1 >= 120 && index + 1 <= 130
     ? `function recognisable_${index + 1}() {}`
@@ -40,7 +44,7 @@ describe("ReadInterceptor", () => {
   it("does not call a runner for files below the threshold", async () => {
     await withFixture("small", "line 1\nline 2\nline 3", async (filePath) => {
       const runner = new FakeSubagentRunner({ structured: answer });
-      const result = await interceptRead(
+      const result = await readWith(
         { filePath, agentContext: { goal: "test" } },
         { runner }
       );
@@ -54,7 +58,7 @@ describe("ReadInterceptor", () => {
   it("returns full content for small files", async () => {
     const content = "line 1\nline 2\nline 3";
     await withFixture("small-content", content, async (filePath) => {
-      const result = await interceptRead({ filePath, agentContext: { goal: "test" } });
+      const result = await readWith({ filePath, agentContext: { goal: "test" } });
       strictEqual(result.excerpts.length, 1);
       strictEqual(result.excerpts[0].startLine, 1);
       strictEqual(result.excerpts[0].endLine, 3);
@@ -65,7 +69,7 @@ describe("ReadInterceptor", () => {
   it("uses an explicit question and slices verified source lines", async () => {
     await withFixture("explicit", largeContent, async (filePath) => {
       const runner = new FakeSubagentRunner({ structured: answer });
-      const result = await interceptRead(
+      const result = await readWith(
         { filePath, question: "Where is the recognisable function?", agentContext: {} },
         { runner }
       );
@@ -82,7 +86,7 @@ describe("ReadInterceptor", () => {
   it("infers a question from the current task", async () => {
     await withFixture("inferred", largeContent, async (filePath) => {
       const runner = new FakeSubagentRunner({ structured: answer });
-      const result = await interceptRead(
+      const result = await readWith(
         { filePath, agentContext: { currentTask: "find the parser entry point" } },
         { runner }
       );
@@ -94,7 +98,7 @@ describe("ReadInterceptor", () => {
   it("accepts both structured and text JSON runner results", async () => {
     await withFixture("result-formats", largeContent, async (filePath) => {
       for (const response of [{ structured: answer }, { text: JSON.stringify(answer) }]) {
-        const result = await interceptRead(
+        const result = await readWith(
           { filePath, agentContext: {} },
           { runner: new FakeSubagentRunner(response) }
         );
@@ -108,7 +112,7 @@ describe("ReadInterceptor", () => {
       const runner = new FakeSubagentRunner(() => {
         throw new Error("runner unavailable");
       });
-      const result = await interceptRead({ filePath, agentContext: {} }, { runner });
+      const result = await readWith({ filePath, agentContext: {} }, { runner });
       strictEqual(result.fallback?.reason, "subagent-error");
       strictEqual(result.excerpts[0].startLine, 1);
       strictEqual(result.excerpts[0].endLine, 400);
@@ -120,7 +124,7 @@ describe("ReadInterceptor", () => {
     await withFixture("timeout", largeContent, async (filePath) => {
       const runner = new FakeSubagentRunner({ structured: answer }, 200);
       const startedAt = performance.now();
-      const result = await interceptRead(
+      const result = await readWith(
         { filePath, agentContext: {} },
         { runner, timeoutMs: 20 }
       );
@@ -137,7 +141,7 @@ describe("ReadInterceptor", () => {
         [{ structured: { ...answer, excerpts: [{ startLine: 500, endLine: 600 }] } }, "no-valid-excerpts"],
       ] as const;
       for (const [response, reason] of cases) {
-        const result = await interceptRead(
+        const result = await readWith(
           { filePath, agentContext: {} },
           { runner: new FakeSubagentRunner(response) }
         );
@@ -148,7 +152,7 @@ describe("ReadInterceptor", () => {
 
   it("falls back when no runner is configured", async () => {
     await withFixture("no-runner", largeContent, async (filePath) => {
-      const result = await interceptRead({ filePath, agentContext: {} });
+      const result = await readWith({ filePath, agentContext: {} });
       strictEqual(result.fallback?.reason, "no-runner");
       strictEqual(result.excerpts[0].content, largeContent);
     });
@@ -158,7 +162,7 @@ describe("ReadInterceptor", () => {
     const content = Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n");
     await withFixture("threshold", content, async (filePath) => {
       const runner = new FakeSubagentRunner({ structured: { ...answer, excerpts: [{ startLine: 1, endLine: 2 }] } });
-      const result = await interceptRead({ filePath, agentContext: {} }, { runner, thresholdLines: 10, minTokens: 0 });
+      const result = await readWith({ filePath, agentContext: {} }, { runner, thresholdLines: 10, minTokens: 0 });
       strictEqual(result.wasIntercepted, true);
       strictEqual(runner.calls.length, 1);
     });
@@ -235,7 +239,7 @@ describe("ReadInterceptor file guard", () => {
     writeFileSync(filePath, Buffer.concat([Buffer.from([0]), binary]));
     try {
       const runner = new FakeSubagentRunner({ structured: answer });
-      const result = await interceptRead({ filePath, agentContext: {} }, { runner });
+      const result = await readWith({ filePath, agentContext: {} }, { runner });
       strictEqual(result.fallback?.reason, "binary-file");
       strictEqual(result.error, "binary file");
       strictEqual(runner.calls.length, 0);
@@ -246,7 +250,7 @@ describe("ReadInterceptor file guard", () => {
 
   it("returns small text files unchanged", async () => {
     await withFixture("small-guard", "a\nb", async (filePath) => {
-      const result = await interceptRead({ filePath, agentContext: {} });
+      const result = await readWith({ filePath, agentContext: {} });
       strictEqual(result.error, undefined);
       strictEqual(result.fallback, undefined);
       strictEqual(result.excerpts[0].content, "a\nb");
@@ -266,7 +270,7 @@ describe("ReadInterceptor model selection", () => {
       };
       const selector = new ModelSelector({ env: {}, picker });
       const runner = new FakeSubagentRunner({ structured: answer });
-      await interceptRead({ filePath, agentContext: {} }, { runner, modelResolver: selector.resolve });
+      await readWith({ filePath, agentContext: {} }, { runner, modelResolver: selector.resolve });
       strictEqual(picker.calls, 0);
       strictEqual(runner.calls.length, 0);
     });
@@ -275,7 +279,7 @@ describe("ReadInterceptor model selection", () => {
   it("does not resolve a model when no runner is configured", async () => {
     await withFixture("model-no-runner", largeContent, async (filePath) => {
       let resolverCalls = 0;
-      const result = await interceptRead(
+      const result = await readWith(
         { filePath, agentContext: {} },
         { modelResolver: async () => { resolverCalls += 1; return undefined; } },
       );
@@ -324,7 +328,7 @@ describe("ReadInterceptor model selection", () => {
     await withFixture("model-explicit", largeContent, async (filePath) => {
       let resolverCalls = 0;
       const runner = new FakeSubagentRunner({ structured: answer });
-      await interceptRead(
+      await readWith(
         { filePath, agentContext: {} },
         {
           runner,

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { configPath } from "./config.js";
+import { DEFAULT_PDF_MAX_CHARS, DEFAULT_PDF_TIMEOUT_MS } from "./pdf.js";
 import { DEFAULT_TUNING, loadTuning, tuningToInterceptorOptions } from "./tuning.js";
 import type { TuningSettings } from "./tuning.js";
 
@@ -41,6 +42,10 @@ const layers = {
   chunkLines: [100, 200, 300, 400, "PARADOC_CHUNK_LINES"],
   chunkOverlapLines: [5, 6, 7, 8, "PARADOC_CHUNK_OVERLAP"],
   cacheMaxEntries: [10, 20, 30, 40, "PARADOC_CACHE"],
+  minTokens: [1100, 1200, 1300, 1400, "PARADOC_MIN_TOKENS"],
+  thresholdTokens: [8100, 8200, 8300, 8400, "PARADOC_THRESHOLD_TOKENS"],
+  pdfTimeoutMs: [11000, 12000, 13000, 14000, "PARADOC_PDF_TIMEOUT_MS"],
+  pdfMaxChars: [101000, 102000, 103000, 104000, "PARADOC_PDF_MAX_CHARS"],
 } as const;
 
 describe("tuning precedence", () => {
@@ -164,7 +169,41 @@ describe("tuningToInterceptorOptions", () => {
       timeoutMs: 30000,
       chunkLines: 80,
       chunkOverlapLines: 0,
+      minTokens: 1000,
+      thresholdTokens: 8000,
+      pdfTimeoutMs: DEFAULT_PDF_TIMEOUT_MS,
+      pdfMaxChars: DEFAULT_PDF_MAX_CHARS,
       judge: { mode: "always" },
     });
+  });
+
+  it("shares one default source with the interceptor and pdf extractor", () => {
+    strictEqual(DEFAULT_TUNING.minTokens, 1000);
+    strictEqual(DEFAULT_TUNING.thresholdTokens, 8000);
+    strictEqual(DEFAULT_TUNING.pdfTimeoutMs, DEFAULT_PDF_TIMEOUT_MS);
+    strictEqual(DEFAULT_TUNING.pdfMaxChars, DEFAULT_PDF_MAX_CHARS);
+  });
+
+  it("forwards the interceptor-only knobs from env and config", () => {
+    const s = setup({ project: { pdfMaxChars: 5000 } }, { PARADOC_MIN_TOKENS: "250", PARADOC_THRESHOLD_TOKENS: "1200", PARADOC_PDF_TIMEOUT_MS: "2500" });
+    const r = loadTuning(s.opts);
+    deepStrictEqual(tuningToInterceptorOptions(r.settings), {
+      ...tuningToInterceptorOptions(DEFAULT_TUNING),
+      minTokens: 250,
+      thresholdTokens: 1200,
+      pdfTimeoutMs: 2500,
+      pdfMaxChars: 5000,
+    });
+    strictEqual(r.sources.minTokens, "env");
+    strictEqual(r.sources.pdfMaxChars, "project");
+    strictEqual(s.warnings.length, 0);
+  });
+
+  it("warns and keeps the default for a bad interceptor-only value", () => {
+    const s = setup({}, { PARADOC_MIN_TOKENS: "0", PARADOC_PDF_MAX_CHARS: "many" });
+    const r = loadTuning(s.opts);
+    strictEqual(r.settings.minTokens, DEFAULT_TUNING.minTokens);
+    strictEqual(r.settings.pdfMaxChars, DEFAULT_PDF_MAX_CHARS);
+    strictEqual(s.warnings.length, 2);
   });
 });

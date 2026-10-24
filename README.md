@@ -12,7 +12,7 @@ npx -y --package=@davidnagy/paradoc@latest paradoc install opencode   # or: copi
 npx -y --package=@davidnagy/paradoc@latest paradoc install opencode --project   # ./.opencode instead of ~/.config/opencode
 ```
 
-The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). It also registers the `paradoc` MCP server (`paradoc_read`, `paradoc_web_read`) in `opencode.jsonc` (`mcp.servers.paradoc`) and `~/.copilot/mcp-config.json`; an existing `paradoc` entry is left untouched. Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.1.2`; the manual setup below is only needed for custom layouts.
+The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). It also registers the `paradoc` MCP server (`paradoc_read`, `paradoc_web_read`, `paradoc_status`, `paradoc_set`, `paradoc_reset`) in `opencode.jsonc` (`mcp.servers.paradoc`) and `~/.copilot/mcp-config.json`; an existing `paradoc` entry is left untouched. Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.1.2`; the manual setup below is only needed for custom layouts.
 
 ## Product intent
 
@@ -161,7 +161,7 @@ Measure the effect on your own files with `npm run build && node scripts/bench-t
 
 ### MCP tools
 
-`paradoc_read` and `paradoc_web_read` are available over the stdio MCP server, which `paradoc install` writes into `opencode.jsonc` automatically. To configure it by hand, use the OpenCode v2 shape (servers live under `mcp.servers`):
+`paradoc_read`, `paradoc_web_read`, `paradoc_status`, `paradoc_set`, and `paradoc_reset` are available over the stdio MCP server, which `paradoc install` writes into `opencode.jsonc` automatically. To configure it by hand, use the OpenCode v2 shape (servers live under `mcp.servers`):
 
 ```json
 {"mcp":{"servers":{"paradoc":{"type":"local","command":["node","/abs/path/to/paradoc/dist/copilot-cli/mcp-entry.js"]}}}}
@@ -173,7 +173,7 @@ Not done (document-only): a real tokenizer, persistent or semantic caching, and 
 
 ## Copilot CLI
 
-The Copilot CLI adapter provides two supported surfaces: an extension `onPostToolUse` view hook for automatic oversized-read interception, and the explicit `paradoc_read(path, question, start_line?, end_line?)` and `paradoc_web_read(url, question, start_line?, end_line?)` MCP tools. The MCP tool routes an explicit question through the same core interceptor; a `start_line` or `end_line` range is always returned raw and never condensed.
+The Copilot CLI adapter provides an extension `onPostToolUse` view hook for automatic oversized-read interception, the native `/paradoc` control command, and explicit `paradoc_read(path, question, start_line?, end_line?)`, `paradoc_web_read(url, question, start_line?, end_line?)`, `paradoc_status`, `paradoc_set`, and `paradoc_reset` MCP tools. The MCP tool routes an explicit question through the same core interceptor; a `start_line` or `end_line` range is always returned raw and never condensed.
 
 ### Extension (automatic view interception)
 
@@ -231,6 +231,18 @@ npm run build && PARADOC_E2E=1 node scripts/e2e-copilot.mjs
 ```
 
 It runs the happy, pass-through, MCP, bogus-model, large, cache-repeat, judge, `pdf` and `web` scenarios (`pdf` needs `pdftotext`; `web` needs network and `PARADOC_E2E_WEB=1`; both SKIP otherwise; select one with `--scenario <name|all>`) against copilot 1.0.98 in isolated temporary projects and prints PASS or FAIL for each scenario (a failing scenario is retried once). Each run uses a throwaway `COPILOT_HOME` that holds only copies of `~/.copilot/config.json` and `settings.json` (the latter carries the `experimental` flag that enables extensions), so user-level hooks, MCP servers and instructions do not apply; set `PARADOC_E2E_SHARED_HOME=1` to use the real `~/.copilot` instead. Without the gate, it prints `SKIP copilot e2e (set PARADOC_E2E=1)` and exits 0.
+
+## Controls
+
+Use the same controls on every installed host:
+
+- **OpenCode:** `/paradoc status`, `/paradoc set <key> <value> [--global|--project]`, or `/paradoc reset [key] [--global|--project]`. The installer writes this as a marked prompt-template command at `.opencode/commands/paradoc.md` (or the global OpenCode commands directory); it calls the ParaDoc MCP tools rather than editing files or running shell commands.
+- **Copilot CLI:** the native `/paradoc` command supports the same subcommands.
+- **CLI fallback:** `paradoc status`, `paradoc set <key> <value>`, and `paradoc reset [key]` are deterministic and scriptable.
+
+`status` reports every effective tuning setting with its source, model choice and source, both project/global config paths, runtime counters when available, and configuration warnings. `set` and `reset` write the chosen scope and print the path; restart the host to apply a changed setting to its current session.
+
+The installed OpenCode command is dispatched for real by `PARADOC_E2E=1 npm run e2e:commands` (OpenCode HTTP `command.list` + `session.command`, needs an authenticated model). Template expansion is LLM-mediated, so the script asserts on the `paradoc_*` tool-call parts and `.paradoc/config.json`, not on model prose. Copilot CLI 1.0.103 does not dispatch extension slash commands in prompt mode (`copilot -p "/paradoc status"` is sent to the model as chat), so the Copilot host is proven by the hermetic installed-shim test in `src/cli/acceptance.test.ts` (run by `npm test`) and the live script prints a reasoned SKIP. See "Cross-host command acceptance" in `docs/m006-value-validation.md`. `paradoc status` remains the deterministic fallback for automation.
 
 ## Tuning
 

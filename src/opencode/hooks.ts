@@ -1,18 +1,13 @@
-import { isAbsolute, relative, resolve } from "path";
 import {
-  LruResultCache,
-  ModelSelector,
-  ReadInterceptor,
-  eventLogLevel,
-  loadTuning,
-  tuningToInterceptorOptions,
-  type ResultCache,
-  type TuningSettings,
-} from "../core/index.js";
-import type { InterceptionEvent, JudgeOptions, PdfExtractor, SubagentRunner } from "../core/index.js";
+  createHostRuntime,
+  displayPathFor,
+  explicitFromOptions,
+  isRecord,
+} from "../core/host-runtime.js";
+import { renderInterceptionResult } from "../core/render.js";
+import type { JudgeOptions, PdfExtractor, ResultCache, SubagentRunner } from "../core/index.js";
 import { createOpenCodeModelPicker } from "./model-picker.js";
 import type { OpenCodeModelPickerOptions, OpenCodePickerUi } from "./model-picker.js";
-import { renderInterceptionResult } from "./render.js";
 import { createOpenCodeRunner } from "./subagent.js";
 import type { OpenCodeSessionClient } from "./subagent.js";
 
@@ -76,27 +71,6 @@ const MAX_CHILD_SESSIONS = 256;
 const MAX_TRACKED_SESSIONS = 100;
 const MAX_TASK_CHARS = 2000;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function describeEvent(event: InterceptionEvent): string {
-  const judge = event.judge ? `, judge=${event.judge.verdict ?? "error"}` : "";
-  const judgeError = event.judge?.error ? ` judge error: ${event.judge.error}` : "";
-  if (event.intercepted) {
-    return `intercepted ${event.filePath} (${event.lineCount} lines, confidence ${event.confidence ?? "?"}${event.chunks !== undefined ? `, chunks=${event.chunks}` : ""}${event.cacheHit ? ", cacheHit=true" : ""}${judge}, ${Math.round(event.elapsedMs ?? 0)}ms)${judgeError}`;
-  }
-  if (event.fallbackReason) {
-    return `fallback ${event.fallbackReason} for ${event.filePath}${event.detail ? `: ${event.detail}` : ""}${judge}`;
-  }
-  return `passthrough ${event.filePath} (${event.lineCount} lines)`;
-}
-
-function displayPathFor(filePath: string, root: string): string {
-  const rel = relative(root, resolve(root, filePath));
-  return rel === "" || rel.startsWith("..") || isAbsolute(rel) ? filePath : rel;
-}
-
 export function createParaDocHooks(options: ParaDocHooksOptions): ParaDocHooks {
   const { client, directory } = options;
 
@@ -115,63 +89,33 @@ export function createParaDocHooks(options: ParaDocHooksOptions): ParaDocHooks {
     }
   };
 
-  const explicit: Partial<TuningSettings> = {};
-  if (options.thresholdLines !== undefined) explicit.thresholdLines = options.thresholdLines;
-  if (options.timeoutMs !== undefined) explicit.timeoutMs = options.timeoutMs;
-  if (options.concurrency !== undefined) explicit.concurrency = options.concurrency;
-  if (options.chunkLines !== undefined) explicit.chunkLines = options.chunkLines;
-  if (options.chunkOverlapLines !== undefined) explicit.chunkOverlapLines = options.chunkOverlapLines;
-  if (options.judge?.mode !== undefined) explicit.judge = options.judge.mode;
-  const { settings } = loadTuning({
-    ...options.configOptions,
-    projectRoot: directory,
-    onWarning: (m) => log("warn", m),
-    explicit,
-  });
-
-  const cache =
-    options.cache ??
-    (settings.cacheMaxEntries > 0 ? new LruResultCache({ maxEntries: settings.cacheMaxEntries }) : undefined);
   const childSessions = new Set<string>();
-  const runner =
-    options.runner ??
-    createOpenCodeRunner(client, {
-      titlePrefix: "paradoc",
-      concurrency: settings.concurrency,
-      onSessionCreated: (id) => {
-        childSessions.add(id);
-        if (childSessions.size > MAX_CHILD_SESSIONS) {
-          const oldest = childSessions.values().next().value;
-          if (oldest !== undefined) childSessions.delete(oldest);
-        }
-      },
-    });
-
-  const selector = new ModelSelector({
-    ...options.configOptions,
+  const runtime = createHostRuntime({
     projectRoot: directory,
+    configOptions: options.configOptions,
+    explicit: explicitFromOptions(options),
+    log,
+    runner: options.runner ?? ((settings) =>
+      createOpenCodeRunner(client, {
+        titlePrefix: "paradoc",
+        concurrency: settings.concurrency,
+        onSessionCreated: (id) => {
+          childSessions.add(id);
+          if (childSessions.size > MAX_CHILD_SESSIONS) {
+            const oldest = childSessions.values().next().value;
+            if (oldest !== undefined) childSessions.delete(oldest);
+          }
+        },
+      })),
+    cache: options.cache,
     picker: options.ui ? createOpenCodeModelPicker(options.ui, options.pickerOptions) : undefined,
-    onWarning: (m) => log("warn", m),
-  });
-
-  const interceptor = new ReadInterceptor({
-    runner,
-    cache,
-    modelResolver: selector.resolve,
-    ...tuningToInterceptorOptions(settings),
+    pdfExtractor: options.pdfExtractor,
+    judge: options.judge,
     maxFileBytes: options.maxFileBytes,
     maxRetries: options.maxRetries,
     retryDelayMs: options.retryDelayMs,
-    ...(options.judge ? { judge: options.judge } : {}),
-    ...(options.pdfExtractor ? { pdfExtractor: options.pdfExtractor } : {}),
-    logger: (event) =>
-      log(
-        eventLogLevel(event),
-        describeEvent(event),
-        // Running totals (counts/ms measured, token figures estimated) ride along on each event.
-        { ...event, stats: interceptor.stats() }
-      ),
   });
+  const interceptor = runtime.interceptorFor(directory);
 
   const lastUserText = new Map<string, string>();
 

@@ -1,15 +1,18 @@
 import { deepStrictEqual, ok, strictEqual } from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { FakeSubagentRunner } from "../core/fake-runner.js";
 import type { PdfExtractor } from "../core/pdf.js";
 import type { WebTransport, WebTransportResponse } from "../core/web-fetch.js";
+import { runControlCommand } from "../cli/controls-cli.js";
 import { createParaDocHooks } from "../opencode/hooks.js";
 import type { ParaDocClient } from "../opencode/hooks.js";
 import { createCopilotHooks } from "./hooks.js";
+import { registerParaDoc } from "./extension-entry.js";
 import { createMcpServer } from "./mcp-server.js";
+import type { JoinSession } from "./types.js";
 import { buildViewInput } from "./probe-fixture.js";
 
 const answer = {
@@ -168,6 +171,57 @@ describe("cross-host parity: documents and PDFs", () => {
       strictEqual(rangedPdf.changed, false, host.name);
       strictEqual(rangedPdf.calls, 0, host.name);
     }
+  });
+});
+
+describe("cross-host parity: controls", () => {
+  it("(P10) CLI, MCP, and Copilot commands persist and render identically across a restart", async () => {
+    const root = join(tmp, "control-parity");
+    const options = { cwd: root, homeDir: tmp, env: {} };
+    const config = join(root, ".paradoc", "config.json");
+    const clearProject = () => rmSync(join(root, ".paradoc"), { recursive: true, force: true });
+
+    const cli = runControlCommand(["set", "thresholdLines", "500"], options);
+    strictEqual(cli.code, 0, cli.stderr);
+    const cliConfig = readFileSync(config, "utf8");
+    clearProject();
+
+    const mcp = createMcpServer({ cwd: root, env: {}, configOptions: { homeDir: tmp, env: {} }, stderr: () => {} });
+    const mcpSet = await mcp.handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {
+      name: "paradoc_set", arguments: { key: "thresholdLines", value: 500 },
+    } });
+    const mcpResult = mcpSet!.result as { content: [{ text: string }]; isError: boolean };
+    strictEqual(mcpResult.isError, false);
+    const mcpConfig = readFileSync(config, "utf8");
+    clearProject();
+
+    const logs: string[] = [];
+    let registration: Parameters<JoinSession>[0] | undefined;
+    const joinSession: JoinSession = async (value) => {
+      registration = value;
+      return { log: (message) => logs.push(message) };
+    };
+    await registerParaDoc(joinSession, { env: {}, configOptions: { homeDir: tmp, env: {}, projectRoot: root }, logSink: () => undefined });
+    await registration!.hooks.onUserPromptSubmitted?.({ sessionId: "p10", prompt: "controls", workingDirectory: root });
+    const command = registration!.commands!.find((entry) => entry.name === "paradoc")!;
+    await command.handler({ sessionId: "p10", command: "/paradoc", commandName: "paradoc", args: "set thresholdLines 500" });
+    const copilotConfig = readFileSync(config, "utf8");
+
+    strictEqual(cliConfig, mcpConfig);
+    strictEqual(mcpConfig, copilotConfig);
+    strictEqual(cli.stdout, mcpResult.content[0].text + "\n");
+
+    const cliStatus = runControlCommand(["status"], options).stdout.trim();
+    const mcpStatus = await mcp.handleMessage({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "paradoc_status", arguments: {} } });
+    const mcpStatusText = (mcpStatus!.result as { content: [{ text: string }] }).content[0].text;
+    await command.handler({ sessionId: "p10", command: "/paradoc", commandName: "paradoc", args: "status" });
+    strictEqual(cliStatus, mcpStatusText);
+    strictEqual(mcpStatusText, logs.at(-1));
+
+    const restarted = createMcpServer({ cwd: root, env: {}, configOptions: { homeDir: tmp, env: {} }, stderr: () => {} });
+    const afterRestart = await restarted.runtime.getStatus(root);
+    strictEqual(afterRestart.settings.thresholdLines, 500);
+    strictEqual(afterRestart.sources.thresholdLines, "project");
   });
 });
 

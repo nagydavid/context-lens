@@ -44,6 +44,7 @@ describe("install", () => {
     assert.ok(existsSync(join(cwd, ".opencode", "plugins", "paradoc.js")));
     const projectConfig = readFileSync(join(cwd, "opencode.jsonc"), "utf8");
     assert.equal(projectConfig.match(/paradoc\.js/g)?.length, 1);
+    assert.ok(existsSync(join(cwd, ".opencode", "commands", "paradoc.md")));
     assert.ok(!existsSync(join(home, ".copilot")));
   });
 
@@ -157,6 +158,40 @@ describe("install", () => {
       const b = fixture();
       install({ targets: ["opencode"], home: b.home, env: b.env, distDir: b.distDir });
       assert.ok(!existsSync(join(b.home, ".copilot")));
+    });
+
+    it("writes a marked OpenCode /paradoc command at global and project scope", () => {
+      const global = fixture();
+      const globalLines = install({ targets: ["opencode"], home: global.home, env: global.env, distDir: global.distDir });
+      const globalCommand = join(global.home, ".config", "opencode", "commands", "paradoc.md");
+      const globalText = readFileSync(globalCommand, "utf8");
+      assert.ok(globalLines.includes(`opencode-command: ${globalCommand}`));
+      assert.ok(globalText.includes("<!-- ParaDoc-generated command; safe to replace -->"));
+      assert.ok(globalText.includes("paradoc_status") && globalText.includes("paradoc_set") && globalText.includes("paradoc_reset"));
+      assert.ok(globalText.includes("$ARGUMENTS"));
+
+      const project = fixture();
+      const cwd = join(project.root, "project");
+      const projectLines = install({ targets: ["opencode"], project: true, home: project.home, cwd, env: project.env, distDir: project.distDir });
+      assert.ok(projectLines.includes(`opencode-command: ${join(cwd, ".opencode", "commands", "paradoc.md")}`));
+    });
+
+    it("rewrites its own OpenCode command but leaves a user-owned command untouched", () => {
+      const generated = fixture();
+      const command = join(generated.home, ".config", "opencode", "commands", "paradoc.md");
+      install({ targets: ["opencode"], home: generated.home, env: generated.env, distDir: generated.distDir });
+      writeFileSync(command, "<!-- ParaDoc-generated command; safe to replace -->\nstale");
+      const rerun = install({ targets: ["opencode"], home: generated.home, env: generated.env, distDir: generated.distDir });
+      assert.ok(rerun.includes(`opencode-command: ${command}`));
+      assert.ok(readFileSync(command, "utf8").includes("paradoc_status"));
+
+      const owned = fixture();
+      const ownedCommand = join(owned.home, ".config", "opencode", "commands", "paradoc.md");
+      mkdirSync(join(owned.home, ".config", "opencode", "commands"), { recursive: true });
+      writeFileSync(ownedCommand, "# My command\nDo not replace\n");
+      const lines = install({ targets: ["opencode"], home: owned.home, env: owned.env, distDir: owned.distDir });
+      assert.equal(readFileSync(ownedCommand, "utf8"), "# My command\nDo not replace\n");
+      assert.ok(!lines.some((line) => line.startsWith("opencode-command:")));
     });
   });
 });

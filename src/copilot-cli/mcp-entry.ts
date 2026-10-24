@@ -1,9 +1,6 @@
 #!/usr/bin/env node
+import { errorMessage } from "../core/host-runtime.js";
 import { createMcpServer, serveStdio } from "./mcp-server.js";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function reportError(error: unknown): void {
   try { process.stderr.write(`[paradoc] error: ${errorMessage(error)}\n`); }
