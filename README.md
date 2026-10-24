@@ -12,7 +12,7 @@ npx -y --package=@davidnagy/paradoc@latest paradoc install opencode   # or: copi
 npx -y --package=@davidnagy/paradoc@latest paradoc install opencode --project   # ./.opencode instead of ~/.config/opencode
 ```
 
-The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). It also registers the `paradoc` MCP server (`paradoc_read`, `paradoc_web_read`, `paradoc_status`, `paradoc_set`, `paradoc_reset`) in `opencode.jsonc` (`mcp.servers.paradoc`) and `~/.copilot/mcp-config.json`; an existing `paradoc` entry is left untouched. Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.1.2`; the manual setup below is only needed for custom layouts.
+The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). It also registers the `paradoc` MCP server (`paradoc_read`, `paradoc_web_read`, `paradoc_status`, `paradoc_set`, `paradoc_reset`) in `opencode.jsonc` (`mcp.servers.paradoc`) and `~/.copilot/mcp-config.json`; an existing `paradoc` entry is left untouched. Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.2.0`; the manual setup below is only needed for custom layouts.
 
 ## Product intent
 

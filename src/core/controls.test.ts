@@ -3,10 +3,11 @@ import { after, describe, it } from "node:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { configPath } from "./config.js";
-import type { ConfigOptions } from "./config.js";
+import { configPath, loadModelConfig } from "./config.js";
+import type { ConfigOptions, ModelChoice } from "./config.js";
 import {
   CONTROL_USAGE,
+  applyModel,
   applyReset,
   applySet,
   parseControlArgs,
@@ -424,5 +425,35 @@ describe("renderChange", () => {
     const result = applyReset("project", s.opts);
     assert.strictEqual(renderChange("reset", result), (result as { message: string }).message);
     assert.strictEqual(renderChange("set", result), (result as { message: string }).message);
+  });
+});
+
+describe("set model", () => {
+  it("parses provider/model, splitting on the first slash, into a set-model action", () => {
+    assert.deepStrictEqual(parse("set model openrouter/qwen/qwen3-4b --global"), {
+      action: "set-model",
+      choice: { providerID: "openrouter", modelID: "qwen/qwen3-4b" },
+      scope: "global",
+    });
+  });
+
+  it("rejects a model value without a provider, with an actionable message", () => {
+    const action = parse("set model haiku");
+    assert.strictEqual(action.action, "error");
+    assert.match((action as { message: string }).message, /expected provider\/model/);
+    assertActionable((action as { message: string }).message);
+  });
+
+  it("writes the model to the project config and keeps the tuning keys untouched", () => {
+    const s = setup({ project: { tuning: { timeoutMs: 5000 } } });
+    const action = parse("set model opencode/gpt-5-nano");
+    assert.strictEqual(action.action, "set-model");
+    const result = applyModel((action as { choice: ModelChoice }).choice, "project", s.opts);
+
+    assert.deepStrictEqual(result, { ok: true, path: configPath("project", s.opts) });
+    const written = readJson(configPath("project", s.opts));
+    assert.deepStrictEqual(written.model, { providerID: "opencode", modelID: "gpt-5-nano" });
+    assert.deepStrictEqual(written.tuning, { timeoutMs: 5000 });
+    assert.strictEqual(loadModelConfig(s.opts)?.choice.modelID, "gpt-5-nano");
   });
 });

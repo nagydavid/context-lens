@@ -11,6 +11,7 @@ import {
 } from "../core/host-runtime.js";
 import { renderInterceptionResult } from "../core/render.js";
 import {
+  applyModel,
   applyReset,
   applySet,
   parseControlArgs,
@@ -263,6 +264,10 @@ export async function handleParaDocSet(args: unknown, deps: ToolContext): Promis
   if (!isRecord(args)) return toolText("paradoc: arguments must be an object", true);
   const action = parseControlArgs(`set ${String(args.key ?? "")} ${String(args.value ?? "")}${controlScope(args.scope)}`);
   if (action.action === "error") return toolText(action.message, true);
+  if (action.action === "set-model") {
+    const result = applyModel(action.choice, action.scope, deps.configOptions);
+    return toolText(renderChange("set", result), !result.ok);
+  }
   if (action.action !== "set") return toolText("paradoc: set needs a key and a value", true);
   const result = applySet({ [action.key]: action.value }, action.scope, deps.configOptions);
   return toolText(renderChange("set", result), !result.ok);

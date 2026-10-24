@@ -342,18 +342,25 @@ describe("ReadInterceptor model selection", () => {
   });
 
   it("continues an intercepted read when the picker is cancelled", async () => {
-    await withFixture("model-cancel", largeContent, async (filePath) => {
-      const events: Array<{ modelSource?: string }> = [];
-      const runner = new FakeSubagentRunner({ structured: answer });
-      const selector = new ModelSelector({ env: {}, picker: { async pick() { return undefined; } } });
-      const result = await new ReadInterceptor({
-        runner,
-        modelResolver: selector.resolve,
-        logger: (event) => events.push(event),
-      }).intercept({ filePath, agentContext: {} });
-      strictEqual(result.wasIntercepted, true);
-      strictEqual(runner.calls[0].model, undefined);
-      strictEqual(events[0].modelSource, "none");
+    await withModelDirs(async (projectRoot, homeDir) => {
+      await withFixture("model-cancel", largeContent, async (filePath) => {
+        const events: Array<{ modelSource?: string }> = [];
+        const runner = new FakeSubagentRunner({ structured: answer });
+        const selector = new ModelSelector({
+          projectRoot,
+          homeDir,
+          env: {},
+          picker: { async pick() { return undefined; } },
+        });
+        const result = await new ReadInterceptor({
+          runner,
+          modelResolver: selector.resolve,
+          logger: (event) => events.push(event),
+        }).intercept({ filePath, agentContext: {} });
+        strictEqual(result.wasIntercepted, true);
+        strictEqual(runner.calls[0].model, undefined);
+        strictEqual(events[0].modelSource, "none");
+      });
     });
   });
 

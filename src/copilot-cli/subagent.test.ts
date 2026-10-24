@@ -51,6 +51,11 @@ describe("CopilotCliSubagentRunner", () => {
     ok(!buildCopilotChildArgs({ ...request, model: undefined }).includes("--model"));
   });
 
+  it("maps a shared OpenCode model ID to the Copilot model ID", () => {
+    const args = buildCopilotChildArgs({ ...request, model: { providerID: "claude-code", modelID: "claude-haiku-5-5" } });
+    deepStrictEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), ["--model", "claude-haiku-4.5"]);
+  });
+
   it("removes extension discovery from the child environment", () => {
     const env = buildCopilotChildEnv({ GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS: "x", HOME: "/tmp/home" });
     strictEqual(env.PARADOC_CHILD, "1");
