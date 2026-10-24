@@ -1,6 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildExtensionShim } from "../copilot-cli/extension-entry.js";
 
@@ -124,6 +124,13 @@ function insertFirstMember(text: string, open: number, close: number, member: st
   return `${text.slice(0, open + 1)} ${member}${nonEmpty ? "," : " "}${text.slice(open + 1)}`;
 }
 
+function findOnPath(name: string): string | undefined {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (dir && existsSync(join(dir, name))) return join(dir, name);
+  }
+  return undefined;
+}
+
 /**
  * Registers the stdio MCP server under `mcp.servers.paradoc`. Text insertion keeps JSONC comments intact.
  * A pre-existing `paradoc` server (even pointing elsewhere) is the user's entry and is left untouched.
@@ -131,7 +138,10 @@ function insertFirstMember(text: string, open: number, close: number, member: st
 function registerOpenCodeMcp(configPath: string, mcpEntry: string): boolean {
   const config = readFileSync(configPath, "utf8");
   if (config.includes(JSON.stringify(mcpEntry))) return false;
-  const server = `"paradoc": {"type": "local", "command": ["node", ${JSON.stringify(mcpEntry)}]}`;
+  // OpenCode starts MCP servers with its own PATH, which may not include the Copilot CLI directory.
+  const copilotBin = findOnPath("copilot");
+  const environment = copilotBin ? `, "environment": {"PARADOC_COPILOT_BIN": ${JSON.stringify(copilotBin)}}` : "";
+  const server = `"paradoc": {"type": "local", "command": ["node", ${JSON.stringify(mcpEntry)}]${environment}}`;
 
   const rootOpen = config.indexOf("{");
   const rootClose = config.lastIndexOf("}");
