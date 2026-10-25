@@ -18,7 +18,7 @@ installed into throwaway homes — see *Fresh-install acceptance*).
 | Copilot CLI | `GitHub Copilot CLI 1.0.103.` (first line of `copilot --version`) |
 | Node | `v24.21.0` |
 | Package (this checkout, `milestone/M008`) | `@davidnagy/paradoc` **0.3.0** — cut in S03 with `npm version 0.3.0 --no-git-tag-version`, so `package.json` and `package-lock.json` moved together |
-| Package (published npm) | **0.2.2** (`npm view @davidnagy/paradoc version`) — tags `v0.2.0`, `v0.2.1`, `v0.2.2` were cut on `milestone/M007` and are ancestors of `milestone/M008`. **0.3.0 is not on the registry yet**: publishing is human-gated, see *Fresh-install acceptance* |
+| Package (published npm) | **0.3.0** (`npm view @davidnagy/paradoc version`; published `2026-10-25T18:29:17Z` by `release.yml` run `40221332672`, provenance `sigstore logIndex=3465134155`) — `0.2.2` and earlier were cut on `milestone/M007` and are ancestors of `milestone/M008`. Registry proof lives in *Registry-sourced acceptance* |
 | HEAD at reproduction time | `63404cd92598f0efd2b4615ad8460ecdf43d6822` (`milestone/M008`) — the working tree was dirty only with the harness/test edits that accompany this refresh |
 | `git diff --stat HEAD v0.2.2` | 23 files changed, 145 insertions(+), 3663 deletions(-) (this branch's S01–S03 docs, harness, installer and adapter work on top of the published tag) |
 
@@ -96,16 +96,36 @@ The evidence records that probe (`experimentalFalseProbe`: file unchanged, `expe
 warning line present, unrelated seed marker kept).
 
 **Which source each result came from.** Everything in this section is **local-tarball** evidence: the
-artifact was packed from this worktree, not fetched from npm. The registry-sourced re-proof
-(`--source @davidnagy/paradoc@0.3.0` → `docs/m008-fresh-install-registry-evidence.json`) is pending the
-human publish step. At `bef9b86` the registry still reports **0.2.2** (`npm view @davidnagy/paradoc
-version`), and running that command today fails closed — `npm error code ETARGET … No matching version
-found for @davidnagy/paradoc@0.3.0` — writing no evidence file. The hand-off is: commit the S03 work on
-`milestone/M008`, fast-forward merge to `master` (`origin/master` `916529b` is an ancestor of HEAD),
-push `master` (CI builds/tests on Node 20 and 22), push tag `v0.3.0` (triggers `release.yml`, which
-stages the publish rather than publishing directly), then approve it with `npm stage approve <stage-id>`
-or on npmjs.com, and only then re-run the harness with `--source @davidnagy/paradoc@0.3.0`. Nothing here
-claims that 0.3.0 is installable from npm.
+artifact was packed from this worktree, not fetched from npm. The registry-sourced re-proof is a separate
+artifact reported in *Registry-sourced acceptance*; no number above is reused as registry proof.
+
+## Registry-sourced acceptance
+
+`docs/m008-fresh-install-registry-evidence.json`, generated at `2026-10-25T18:34:03Z` from `fc7629d` by
+`PARADOC_E2E=1 node scripts/accept-fresh-install.mjs --source @davidnagy/paradoc@0.3.0`. `source.kind =
+"registry"` and every run reports `runtimeSource = registry`: the runtime under test came from npm.
+Publishing now runs through the package's GitHub trusted publisher (`trust id
+f4406f3e-e683-4777-aaab-27be1eaa3144`, permissions `publish` + `stage publish`, pinned to
+`nagydavid/paradoc` and `release.yml`), so a tag push publishes directly with provenance.
+
+| Field | Value |
+|---|---|
+| Source | **registry** `@davidnagy/paradoc@0.3.0` — `latest = 0.3.0`, published `2026-10-25T18:29:17Z` |
+| `installedVersion` / `repoVersion` | **0.3.0** / 0.3.0 — the installed runtime stamp equals the repo version |
+| Hosts | `opencode v2.1.0`, `GitHub Copilot CLI 1.0.103.`, Node `v24.21.0` |
+| Isolation | install ran with `HOME`/`XDG_DATA_HOME`/`XDG_CONFIG_HOME` redirected to `/tmp/paradoc-fresh-RyP74m/home`; live runs keep the real `HOME`/`XDG_DATA_HOME` for provider auth only |
+| Structural pre-flight | **15/15 true** — same named checks as the tarball run, against the npm-installed runtime |
+| Legacy negative control | `@davidnagy/paradoc@0.2.2` **PASS** as negative control: legacy singular `plugin` key, flat shim, no `tool.transform`, no version stamp |
+
+Registry-installed runs (all **PASS**; OpenCode `openai/gpt-5.6-terra`, Copilot
+`github/claude-haiku-4.5`; independent live sessions, so timings differ from the tarball run):
+
+| host / scenario (registry) | interception |
+|---|---|
+| opencode / large (registry) | 6 of 3000 lines, confidence 5, 7995 ms, `chunks=4`, `concurrencyPinned=false`, `interceptedCount=1`, `fallbackCount=0`, `modelSource=project`, `childModelCall=generate.text` |
+| opencode / happy (registry) | 6 of 400 lines, confidence 5, 4318 ms, `interceptedCount=1`, `fallbackCount=0`, `modelSource=project`, `childModelCall=generate.text` |
+| copilot / large (registry) | 6 of 3000 lines, confidence 5, 15725 ms, `chunks=4`, `interceptedCount=1`, `fallbackCount=0`, 44296 tokens saved, `modelSource=env` |
+| copilot / pass-through (registry) | `interceptedCount=0`, `fallbackCount=0` — the offset/range rule holds on the published artifact too |
 
 ## OpenCode contract
 
