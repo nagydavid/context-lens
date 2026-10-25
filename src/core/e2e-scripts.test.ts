@@ -66,4 +66,32 @@ describe("live harness scripts (hermetic guard)", () => {
       ok(result.stdout.includes(word), `missing "${word}" in: ${result.stdout}`);
     }
   });
+
+  // The M008 reproduction entry point reuses the same gate convention as the harnesses.
+  const repro = "scripts/repro-host-interception.mjs";
+  const reproSkip = "SKIP host-interception repro (set PARADOC_E2E=1)";
+
+  it(`${repro} parses`, { timeout: TIMEOUT }, () => {
+    strictEqual(run(["--check", repro]).status, 0);
+  });
+
+  it(`${repro} skips without PARADOC_E2E`, { timeout: TIMEOUT }, () => {
+    const result = run([repro]);
+    strictEqual(result.status, 0, result.stderr);
+    strictEqual(result.stdout.trim(), reproSkip);
+  });
+
+  it(`${repro} --out /nonexistent/x.json still skips with exit 0`, { timeout: TIMEOUT }, () => {
+    const result = run([repro, "--out", "/nonexistent/x.json"]);
+    strictEqual(result.status, 0, result.stderr);
+    strictEqual(result.stdout.trim(), reproSkip);
+    ok(!result.stdout.includes("nonexistent"), `argument handling leaked before the gate: ${result.stdout}${result.stderr}`);
+  });
+
+  it(`${repro} gate runs before argument validation (unknown args never reach the parser)`, { timeout: TIMEOUT }, () => {
+    const result = run([repro, "--bogus", "--out"]);
+    strictEqual(result.status, 0, result.stderr);
+    strictEqual(result.stdout.trim(), reproSkip);
+    strictEqual(result.stderr.trim(), "");
+  });
 });
