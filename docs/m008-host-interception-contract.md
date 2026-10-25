@@ -98,8 +98,14 @@ warning line present, unrelated seed marker kept).
 **Which source each result came from.** Everything in this section is **local-tarball** evidence: the
 artifact was packed from this worktree, not fetched from npm. The registry-sourced re-proof
 (`--source @davidnagy/paradoc@0.3.0` → `docs/m008-fresh-install-registry-evidence.json`) is pending the
-human publish step (commit on `milestone/M008`, merge to `master`, push `v0.3.0` to trigger
-`release.yml`, approve the staged release), so nothing here claims that 0.3.0 is installable from npm.
+human publish step. At `bef9b86` the registry still reports **0.2.2** (`npm view @davidnagy/paradoc
+version`), and running that command today fails closed — `npm error code ETARGET … No matching version
+found for @davidnagy/paradoc@0.3.0` — writing no evidence file. The hand-off is: commit the S03 work on
+`milestone/M008`, fast-forward merge to `master` (`origin/master` `916529b` is an ancestor of HEAD),
+push `master` (CI builds/tests on Node 20 and 22), push tag `v0.3.0` (triggers `release.yml`, which
+stages the publish rather than publishing directly), then approve it with `npm stage approve <stage-id>`
+or on npmjs.com, and only then re-run the harness with `--source @davidnagy/paradoc@0.3.0`. Nothing here
+claims that 0.3.0 is installable from npm.
 
 ## OpenCode contract
 
