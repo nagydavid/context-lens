@@ -31,27 +31,146 @@ function installRuntime(distDir: string, dataDir: string): string {
   return join(dataDir, "dist");
 }
 
-function registerOpenCodePlugin(configPath: string, shimPath: string): boolean {
-  const specifier = JSON.stringify(pathToFileURL(shimPath).href);
+/**
+ * Top-level element spans of the array whose `[` sits at `open` (`close` is its `]`).
+ * `to` is the index of the separating comma, or `close` for the final element.
+ */
+function arrayElements(text: string, open: number, close: number): { from: number; to: number }[] {
+  const spans: { from: number; to: number }[] = [];
+  let depth = 0;
+  let start = open + 1;
+  for (const t of significant(text, open + 1, close)) {
+    if (t.ch === "{" || t.ch === "[") depth++;
+    else if (t.ch === "}" || t.ch === "]") depth--;
+    else if (t.ch === "," && depth === 0) {
+      spans.push({ from: start, to: t.i });
+      start = t.i + 1;
+    }
+  }
+  if (start < close && [...significant(text, start, close)].length > 0) spans.push({ from: start, to: close });
+  return spans;
+}
+
+/**
+ * Drops ParaDoc's own legacy entry from a `plugin`/`plugins` array member: the member is removed
+ * entirely when it held only the old flat `plugins/paradoc.js` shim, otherwise just that element
+ * is removed. Any other plugin's entries stay exactly as written.
+ */
+function removeLegacyOpenCodeEntry(config: string, legacyShimPath: string): string {
+  const quoted = JSON.stringify(pathToFileURL(legacyShimPath).href);
+  let text = config;
+  for (let pass = 0; pass < 8; pass++) {
+    const next = removeOneLegacyEntry(text, quoted, legacyShimPath);
+    if (next === text) break;
+    text = next;
+  }
+  return text;
+}
+
+/** Removes the first ParaDoc legacy-shim element found in any `plugin`/`plugins` array member. */
+function removeOneLegacyEntry(config: string, quoted: string, legacyShimPath: string): string {
+  const keySearch = /"plugins?"\s*:/g;
+  let member: RegExpExecArray | null;
+  while ((member = keySearch.exec(config)) !== null) {
+    const open = config.indexOf("[", member.index + member[0].length);
+    if (open < 0 || !/^\s*$/.test(config.slice(member.index + member[0].length, open))) continue;
+    const close = matchBrace(config, open);
+    if (close < 0) continue;
+
+    const isLegacy = (span: { from: number; to: number }) => {
+      const raw = config.slice(span.from, span.to).trim();
+      return raw === quoted || raw === legacyShimPath;
+    };
+    const spans = arrayElements(config, open, close);
+    const doomed = spans.filter(isLegacy);
+    if (doomed.length === 0) continue;
+
+    if (doomed.length === spans.length) {
+      // The member becomes empty: remove it, its indentation, and one adjacent comma.
+      let from = member.index;
+      let to = close + 1;
+      let before = from - 1;
+      while (before >= 0 && (config[before] === " " || config[before] === "\t")) before--;
+      if (config[before] === "\n") from = before;
+      let after = to;
+      while (after < config.length && (config[after] === " " || config[after] === "\t")) after++;
+      if (config[after] === ",") to = after + 1;
+      else {
+        let comma = member.index - 1;
+        while (comma >= 0 && /\s/.test(config[comma])) comma--;
+        if (config[comma] === ",") from = comma;
+      }
+      return `${config.slice(0, from)}${config.slice(to)}`;
+    }
+
+    // Other plugins share the member: remove only ParaDoc's element (back-to-front keeps indices valid).
+    let text = config;
+    for (const span of [...doomed].reverse()) {
+      let from = span.from;
+      let to = span.to;
+      if (span.to === close) {
+        let comma = from - 1;
+        while (comma > open && /\s/.test(text[comma])) comma--;
+        if (text[comma] === ",") from = comma;
+      } else {
+        to += 1;
+      }
+      text = `${text.slice(0, from)}${text.slice(to)}`;
+    }
+    return text;
+  }
+  return config;
+}
+
+/**
+ * Registers ParaDoc's plugin **directory** under `plugins` (plural): OpenCode v2 reads only the
+ * plural key and requires each entry to be a directory whose index module it loads. A singular
+ * `plugin` member is the silent state where MCP tools work but native read interception never runs,
+ * so ParaDoc upgrades it and removes its own legacy flat-shim entry.
+ */
+function registerOpenCodePlugin(configPath: string, pluginDir: string, legacyShimPath: string): boolean {
+  const specifier = JSON.stringify(pathToFileURL(pluginDir).href);
   let config = "";
   try {
     config = readFileSync(configPath, "utf8");
   } catch {
     writeFileSync(configPath, `{
-  "plugin": [${specifier}]
+  "plugins": [${specifier}]
 }
 `);
     return true;
   }
 
-  if (config.includes(specifier)) return false;
-
-  const pluginArray = /("plugin"\s*:\s*\[)([\s\S]*?)(\])/.exec(config);
+  const pluginArray = /("plugins"\s*:\s*\[)([\s\S]*?)(\])/.exec(config);
   if (pluginArray) {
+    if (pluginArray[2].includes(specifier)) {
+      const cleaned = removeLegacyOpenCodeEntry(config, legacyShimPath);
+      if (cleaned === config) return false;
+      writeFileSync(configPath, cleaned);
+      return true;
+    }
     const close = pluginArray.index + pluginArray[0].length - 1;
     const body = pluginArray[2].trim();
-    const insertion = body ? `, ${specifier}` : ` ${specifier} `;
-    writeFileSync(configPath, `${config.slice(0, close)}${insertion}${config.slice(close)}`);
+    // A JSONC array may end with a trailing comma; appending another one would be invalid.
+    const insertion = body.endsWith(",") ? ` ${specifier}` : body ? `, ${specifier}` : ` ${specifier} `;
+    const updated = `${config.slice(0, close)}${insertion}${config.slice(close)}`;
+    writeFileSync(configPath, removeLegacyOpenCodeEntry(updated, legacyShimPath));
+    return true;
+  }
+
+  const legacy = /("plugin"\s*:\s*\[)([\s\S]*?)(\])/.exec(config);
+  if (legacy) {
+    const prefix = legacy[1].replace(/^"plugin"/, '"plugins"');
+    let upgraded = `${config.slice(0, legacy.index)}${prefix}${config.slice(legacy.index + legacy[1].length)}`;
+    const legacyClose = legacy.index + legacy[0].length - 1 + (prefix.length - legacy[1].length);
+    if (!legacy[2].includes(specifier)) {
+      const body = legacy[2].trim();
+      const insertion = body.endsWith(",") ? ` ${specifier}` : body ? `, ${specifier}` : ` ${specifier} `;
+      upgraded = `${upgraded.slice(0, legacyClose)}${insertion}${upgraded.slice(legacyClose)}`;
+    }
+    // The renamed member must not keep ParaDoc's old flat-shim specifier: v2 would warn that a
+    // configured plugin path must be a directory.
+    writeFileSync(configPath, removeLegacyOpenCodeEntry(upgraded, legacyShimPath));
     return true;
   }
 
@@ -59,7 +178,7 @@ function registerOpenCodePlugin(configPath: string, shimPath: string): boolean {
   if (close < 0) throw new Error(`OpenCode config is not a JSON object: ${configPath}`);
   const before = config.slice(0, close).trimEnd();
   const comma = before.endsWith("{") || before.endsWith(",") ? "" : ",";
-  writeFileSync(configPath, `${before}${comma}\n  "plugin": [${specifier}]\n${config.slice(close)}`);
+  writeFileSync(configPath, `${before}${comma}\n  "plugins": [${specifier}]\n${config.slice(close)}`);
   return true;
 }
 
@@ -233,14 +352,22 @@ export function install(options: InstallOptions): string[] {
     if (target === "opencode") {
       const dir = options.project ? join(cwd, ".opencode") : join(configHome, "opencode");
       const url = pathToFileURL(join(runtime, "opencode", "plugin-v2.js")).href;
-      mkdirSync(join(dir, "plugins"), { recursive: true });
-      const shim = join(dir, "plugins", "paradoc.js");
-      writeFileSync(shim, `export { ParaDocV2Plugin as default } from ${JSON.stringify(url)};\n`);
+      // ParaDoc owns its own plugin directory; the shared `plugins/` root is never written to,
+      // because other plugins' directory entries load that root's index module.
+      const pluginDir = join(dir, "plugins", "paradoc");
+      mkdirSync(pluginDir, { recursive: true });
+      const pluginIndex = join(pluginDir, "index.js");
+      writeFileSync(pluginIndex, `export { ParaDocV2Plugin as default } from ${JSON.stringify(url)};\n`);
+      // The pre-directory-rule flat shim would still be auto-discovered next to the new entry.
+      const legacyShim = join(dir, "plugins", "paradoc.js");
+      if (existsSync(legacyShim) && readFileSync(legacyShim, "utf8").includes("ParaDocV2Plugin as default")) {
+        rmSync(legacyShim, { force: true });
+      }
       const configPath = options.project ? join(cwd, "opencode.jsonc") : join(dir, "opencode.jsonc");
-      registerOpenCodePlugin(configPath, shim);
+      registerOpenCodePlugin(configPath, pluginDir, legacyShim);
       registerOpenCodeMcp(configPath, mcpEntry);
       const command = writeOpenCodeCommand(dir);
-      written.push(`opencode: ${shim}`);
+      written.push(`opencode: ${pluginIndex}`);
       written.push(`opencode-config: ${configPath}`);
       written.push(`opencode-mcp: ${configPath}`);
       if (command) written.push(`opencode-command: ${command}`);

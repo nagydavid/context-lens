@@ -12,7 +12,7 @@ npx -y --package=@davidnagy/paradoc@latest paradoc install opencode   # or: copi
 npx -y --package=@davidnagy/paradoc@latest paradoc install opencode --project   # ./.opencode instead of ~/.config/opencode
 ```
 
-The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc.js`, `~/.copilot/extensions/paradoc/extension.mjs`). It also registers the `paradoc` MCP server (`paradoc_read`, `paradoc_web_read`, `paradoc_status`, `paradoc_set`, `paradoc_reset`) in `opencode.jsonc` (`mcp.servers.paradoc`) and `~/.copilot/mcp-config.json`; an existing `paradoc` entry is left untouched. Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.2.0`; the manual setup below is only needed for custom layouts.
+The installer downloads the latest published runtime, copies it to `~/.local/share/paradoc`, and writes the host shims (`~/.config/opencode/plugins/paradoc/index.js`, `~/.copilot/extensions/paradoc/extension.mjs`). For OpenCode it registers that plugin **directory** under the plural `plugins` array of `opencode.jsonc` (v2 ignores the singular `plugin` key and rejects a file entry) and upgrades a legacy ParaDoc entry left by an earlier install. It also registers the `paradoc` MCP server (`paradoc_read`, `paradoc_web_read`, `paradoc_status`, `paradoc_set`, `paradoc_reset`) in `opencode.jsonc` (`mcp.servers.paradoc`) and `~/.copilot/mcp-config.json`; an existing `paradoc` entry is left untouched. Re-run the same command to upgrade. Restart the host afterwards. Pin a release with `@davidnagy/paradoc@0.2.0`; the manual setup below is only needed for custom layouts.
 
 ## Product intent
 
@@ -131,16 +131,18 @@ Fallback reasons are observable and explicit: `no-runner`, `timeout`, `network-e
 
 ParaDoc ships two plugin entry points because OpenCode changed its plugin contract:
 
-- **OpenCode v2 (current hosts, e.g. 2.0.30):** auto-discovery loads a project shim whose **default export** is the v2 `{ id, setup }` plugin definition. Create `.opencode/plugins/paradoc.js` and register it in `opencode.jsonc`:
+- **OpenCode v2 (current hosts, e.g. 2.1.0):** every `plugins` entry must be a **directory**; the host loads that directory's index module, whose **default export** is the v2 `{ id, setup }` plugin definition. Create `.opencode/plugins/paradoc/index.js` and register the directory in `opencode.jsonc`:
 
   ```jsonc
-  { "plugin": ["@davidnagy/paradoc"] }
+  { "plugins": ["file:///abs/path/to/project/.opencode/plugins/paradoc"] }
   ```
 
   ```js
-  // .opencode/plugins/paradoc.js
+  // .opencode/plugins/paradoc/index.js
   export { ParaDocV2Plugin as default } from "@davidnagy/paradoc/opencode/plugin-v2";
   ```
+
+  The singular `"plugin"` key is ignored by v2 and a file entry such as `plugins/paradoc.js` is skipped with a `configured plugin path must be a directory` warning - both are silent no-interception states.
 
 - **OpenCode 1.x (legacy factory):** add the plugin to `opencode.json`:
 
@@ -153,7 +155,7 @@ ParaDoc ships two plugin entry points because OpenCode changed its plugin contra
 
 The cheap model is chosen from `PARADOC_MODEL="provider/model"`, else `.paradoc/config.json` or `~/.config/paradoc/config.json`, else the host default.
 
-Native `read` results over 350 lines (and at least ~1,000 estimated tokens) are condensed into excerpts with line ranges, a confidence score and a list of omitted ranges. Cheap files and ranged reads (`offset`/`limit`) pass through unchanged; very wide files (~8,000+ estimated tokens, e.g. minified or generated) are condensed even under 350 lines. Token counts are estimated as chars/4.
+Native `read` results over 350 lines (and at least ~1,000 estimated tokens) are condensed into excerpts with line ranges, a confidence score and a list of omitted ranges. Cheap files and explicit ranged reads (OpenCode `offset`; Copilot `view_range`/`start_line`/`end_line`) pass through unchanged - a bare `limit` is how a model asks for the top of a file, so it is still condensed. Very wide files (~8,000+ estimated tokens, e.g. minified or generated) are condensed even under 350 lines. Token counts are estimated as chars/4.
 
 Identical repeat reads are served from the in-memory result cache with no model call (see [Cache](#cache)). Tune the eligibility floors with `minTokens` and `thresholdTokens` on `ReadInterceptor`. `interceptor.stats()` returns measured counts and delegation time plus *estimated* token savings; the same running totals are attached as `stats` to each existing log event. Nothing leaves the process.
 
@@ -230,7 +232,7 @@ An authenticated Copilot CLI is required for the opt-in live harness:
 npm run build && PARADOC_E2E=1 node scripts/e2e-copilot.mjs
 ```
 
-It runs the happy, pass-through, MCP, bogus-model, large, cache-repeat, judge, `pdf` and `web` scenarios (`pdf` needs `pdftotext`; `web` needs network and `PARADOC_E2E_WEB=1`; both SKIP otherwise; select one with `--scenario <name|all>`) against copilot 1.0.98 in isolated temporary projects and prints PASS or FAIL for each scenario (a failing scenario is retried once). Each run uses a throwaway `COPILOT_HOME` that holds only copies of `~/.copilot/config.json` and `settings.json` (the latter carries the `experimental` flag that enables extensions), so user-level hooks, MCP servers and instructions do not apply; set `PARADOC_E2E_SHARED_HOME=1` to use the real `~/.copilot` instead. Without the gate, it prints `SKIP copilot e2e (set PARADOC_E2E=1)` and exits 0.
+It runs the happy, pass-through, MCP, bogus-model, large, cache-repeat, judge, `pdf` and `web` scenarios (`pdf` needs `pdftotext`; `web` needs network and `PARADOC_E2E_WEB=1`; both SKIP otherwise; select one with `--scenario <name|all>`) in isolated temporary projects, prints PASS or FAIL for each scenario (a failing scenario is retried once), and warns only when the host is older than copilot 1.0.103. Each run uses a throwaway `COPILOT_HOME` that holds only copies of `~/.copilot/config.json` and `settings.json` (the latter carries the `experimental` flag that enables extensions), so user-level hooks, MCP servers and instructions do not apply; set `PARADOC_E2E_SHARED_HOME=1` to use the real `~/.copilot` instead. Without the gate, it prints `SKIP copilot e2e (set PARADOC_E2E=1)` and exits 0.
 
 ## Controls
 

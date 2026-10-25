@@ -13,11 +13,23 @@ const dist = join(root, "dist", "copilot-cli");
 const entryModule = join(dist, "extension-entry.js");
 const fixtureModule = join(dist, "probe-fixture.js");
 const mcpEntryModule = join(dist, "mcp-entry.js");
-const expectedVersion = "1.0.98";
+// Minimum, not exact: the extension contract is stable across patch releases, and an exact pin
+// produced constant WARN noise on every newer host.
+const minimumVersion = "1.0.103";
 const WEB_URL = process.env.PARADOC_E2E_WEB_URL || "https://nodejs.org/api/path.html";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+/** <0 when `a` is older than `b`. */
+function compareVersions(a, b) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0);
+  }
+  return 0;
 }
 
 async function exists(path) {
@@ -256,7 +268,10 @@ async function main() {
 
   const version = await run("copilot", ["--version"], { cwd: root, env: process.env }, 15_000);
   if (version.code !== 0) throw new Error(`copilot --version failed: ${version.stderr.trim()}`);
-  if (!version.stdout.includes(expectedVersion)) console.warn(`WARN expected copilot ${expectedVersion}, got ${version.stdout.trim()}`);
+  const versionText = version.stdout.trim();
+  const foundVersion = versionText.match(/\d+\.\d+\.\d+/)?.[0];
+  if (!foundVersion) console.warn(`WARN could not parse a copilot version from: ${versionText}`);
+  else if (compareVersions(foundVersion, minimumVersion) < 0) console.warn(`WARN expected copilot >= ${minimumVersion}, got ${versionText}`);
 
   const fixtureMod = await import(pathToFileURL(fixtureModule).href);
   const largeSymbol = fixtureMod.E2E_LARGE_FIXTURE_SYMBOL;

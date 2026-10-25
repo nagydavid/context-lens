@@ -187,19 +187,19 @@ function pluginLogs(transcript) {
 async function setupProject(temp, configHome, modelConfig, fixture) {
   const fixturePath = join(temp, "fixture.ts");
   await mkdir(join(temp, ".paradoc"), { recursive: true });
-  await mkdir(join(temp, ".opencode", "plugins"), { recursive: true });
   await writeFile(fixturePath, fixture, "utf8");
   await writeFile(join(temp, ".paradoc", "config.json"), JSON.stringify({ version: 1, model: modelConfig }) + "\n");
-  // v2 auto-discovers project shims and invokes their default export. Keep the
-  // plugin module's single named export intact for the package API.
-  const pluginShim = join(temp, ".opencode", "plugins", "paradoc.js");
+  // Mirror the installer's registration shape exactly: ParaDoc's own plugin *directory*
+  // under the plural `plugins` key. OpenCode v2 loads that directory's index module; a file
+  // entry is rejected ("configured plugin path must be a directory") and the singular
+  // "plugin" key is ignored, which is the silent no-interception state.
+  const pluginDir = join(temp, ".opencode", "plugins", "paradoc");
+  await mkdir(pluginDir, { recursive: true });
   await writeFile(
-    pluginShim,
+    join(pluginDir, "index.js"),
     `export { ParaDocV2Plugin as default } from ${JSON.stringify(pathToFileURL(pluginModule).href)};\n`,
   );
-  // v2's project scan is optional in standalone mode, so register the same shim
-  // explicitly through the singular plugin array as well.
-  await writeFile(join(temp, "opencode.jsonc"), JSON.stringify({ plugin: [pathToFileURL(pluginShim).href] }) + "\n");
+  await writeFile(join(temp, "opencode.jsonc"), JSON.stringify({ plugins: [pathToFileURL(pluginDir).href] }) + "\n");
   await mkdir(configHome, { recursive: true });
   return fixturePath;
 }

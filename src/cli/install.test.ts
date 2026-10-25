@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
 import { install } from "./install.js";
@@ -18,37 +18,52 @@ function fixture() {
   return { root, distDir, home, env: { XDG_DATA_HOME: undefined, XDG_CONFIG_HOME: undefined } as NodeJS.ProcessEnv };
 }
 
+const stripComments = (text: string) => text.replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+/** Parses a JSONC config the way OpenCode would, so registration changes stay valid JSON. */
+const parseConfig = (text: string): Record<string, unknown> => JSON.parse(stripComments(text)) as Record<string, unknown>;
+const dirUrl = (path: string) => pathToFileURL(path).href;
+
 describe("install", () => {
   it("copies the runtime without tests and writes both shims pointing at it", () => {
     const { distDir, home, env } = fixture();
-    install({ targets: ["opencode", "copilot"], home, env, distDir });
+    const lines = install({ targets: ["opencode", "copilot"], home, env, distDir });
 
     const runtime = join(home, ".local", "share", "paradoc");
     assert.ok(existsSync(join(runtime, "dist", "opencode", "plugin-v2.js")));
     assert.ok(!existsSync(join(runtime, "dist", "opencode", "plugin-v2.test.js")));
     assert.equal(readFileSync(join(runtime, "package.json"), "utf8"), '{"type":"module"}\n');
 
-    const oc = readFileSync(join(home, ".config", "opencode", "plugins", "paradoc.js"), "utf8");
-    assert.ok(oc.includes(pathToFileURL(join(runtime, "dist", "opencode", "plugin-v2.js")).href));
-    const ocConfig = readFileSync(join(home, ".config", "opencode", "opencode.jsonc"), "utf8");
-    assert.ok(ocConfig.includes(pathToFileURL(join(home, ".config", "opencode", "plugins", "paradoc.js")).href));
+    // OpenCode v2 loads a plugin *directory* entry and runs its index module.
+    const ocDir = join(home, ".config", "opencode");
+    const pluginIndex = join(ocDir, "plugins", "paradoc", "index.js");
+    assert.ok(lines.includes(`opencode: ${pluginIndex}`));
+    assert.ok(readFileSync(pluginIndex, "utf8").includes(dirUrl(join(runtime, "dist", "opencode", "plugin-v2.js"))));
+    const ocConfig = readFileSync(join(ocDir, "opencode.jsonc"), "utf8");
+    assert.ok(ocConfig.includes(dirUrl(join(ocDir, "plugins", "paradoc"))));
+    assert.deepEqual(parseConfig(ocConfig).plugins, [dirUrl(join(ocDir, "plugins", "paradoc"))]);
+    // The shared plugins root is never written to, and the pre-directory-rule shim is gone.
+    assert.ok(!existsSync(join(ocDir, "plugins", "index.js")));
+    assert.ok(!existsSync(join(ocDir, "plugins", "paradoc.js")));
+
     const cp = readFileSync(join(home, ".copilot", "extensions", "paradoc", "extension.mjs"), "utf8");
-    assert.ok(cp.includes(pathToFileURL(join(runtime, "dist", "copilot-cli", "extension-entry.js")).href));
+    assert.ok(cp.includes(dirUrl(join(runtime, "dist", "copilot-cli", "extension-entry.js"))));
   });
 
-  it("--project writes the opencode shim under cwd and is idempotent", () => {
+  it("--project writes the plugin directory under cwd and is idempotent", () => {
     const { root, distDir, home, env } = fixture();
     const cwd = join(root, "proj");
     install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
     install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
-    assert.ok(existsSync(join(cwd, ".opencode", "plugins", "paradoc.js")));
+    assert.ok(existsSync(join(cwd, ".opencode", "plugins", "paradoc", "index.js")));
+    assert.ok(!existsSync(join(cwd, ".opencode", "plugins", "index.js")));
     const projectConfig = readFileSync(join(cwd, "opencode.jsonc"), "utf8");
-    assert.equal(projectConfig.match(/paradoc\.js/g)?.length, 1);
+    assert.equal(projectConfig.match(/\/plugins\/paradoc(\/index\.js)?/g)?.length, 1);
+    assert.deepEqual(parseConfig(projectConfig).plugins, [dirUrl(join(cwd, ".opencode", "plugins", "paradoc"))]);
     assert.ok(existsSync(join(cwd, ".opencode", "commands", "paradoc.md")));
     assert.ok(!existsSync(join(home, ".copilot")));
   });
 
-  it("adds the shim to an existing OpenCode plugin array without clobbering config", () => {
+  it("upgrades a legacy singular plugin array without clobbering other plugins", () => {
     const { root, distDir, home, env } = fixture();
     const cwd = join(root, "existing");
     mkdirSync(cwd, { recursive: true });
@@ -56,13 +71,78 @@ describe("install", () => {
     install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
     install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
     const config = readFileSync(join(cwd, "opencode.jsonc"), "utf8");
-    assert.ok(config.includes('"existing-plugin"'));
-    assert.ok(config.includes('"theme": "dark"'));
-    assert.equal(config.match(/paradoc\.js/g)?.length, 1);
+    assert.ok(!config.includes('"plugin":'), "v2 ignores the singular key");
+    const parsed = parseConfig(config);
+    assert.deepEqual(parsed.plugins, ["existing-plugin", dirUrl(join(cwd, ".opencode", "plugins", "paradoc"))]);
+    assert.equal(parsed.theme, "dark");
+  });
+
+  it("replaces ParaDoc's own legacy flat-shim entry and deletes the shim file", () => {
+    const { root, distDir, home, env } = fixture();
+    const cwd = join(root, "legacy");
+    const pluginsRoot = join(cwd, ".opencode", "plugins");
+    mkdirSync(pluginsRoot, { recursive: true });
+    const legacyShim = join(pluginsRoot, "paradoc.js");
+    writeFileSync(legacyShim, 'export { ParaDocV2Plugin as default } from "file:///stale/plugin-v2.js";\n');
+    writeFileSync(join(cwd, "opencode.jsonc"), `{
+  "plugin": [${JSON.stringify(dirUrl(legacyShim))}],
+  "theme": "dark"
+}
+`);
+    install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
+    const config = readFileSync(join(cwd, "opencode.jsonc"), "utf8");
+    assert.ok(!config.includes("paradoc.js"), "the flat shim specifier must not survive: v2 warns it must be a directory");
+    assert.ok(!existsSync(legacyShim), "a stale ParaDoc shim would be double-loaded by discovery");
+    const parsed = parseConfig(config);
+    assert.deepEqual(parsed.plugins, [dirUrl(join(cwd, ".opencode", "plugins", "paradoc"))]);
+    assert.equal(parsed.theme, "dark");
+  });
+
+  it("appends to an existing plural plugins array, trailing comma included", () => {
+    const { root, distDir, home, env } = fixture();
+    const cwd = join(root, "plural");
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(cwd, "opencode.jsonc"), '{\n  // user plugins\n  "plugins": ["billion-context", "file:///opt/other",],\n  "theme": "dark"\n}\n');
+    install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
+    const config = readFileSync(join(cwd, "opencode.jsonc"), "utf8");
+    assert.ok(config.includes("// user plugins"));
+    const parsed = parseConfig(config);
+    assert.deepEqual(parsed.plugins, ["billion-context", "file:///opt/other", dirUrl(join(cwd, ".opencode", "plugins", "paradoc"))]);
+    assert.equal(parsed.theme, "dark");
+  });
+
+  it("removes only ParaDoc's element from a shared singular plugin array", () => {
+    const { root, distDir, home, env } = fixture();
+    const cwd = join(root, "shared");
+    const legacyShim = join(cwd, ".opencode", "plugins", "paradoc.js");
+    mkdirSync(join(cwd, ".opencode", "plugins"), { recursive: true });
+    writeFileSync(join(cwd, "opencode.jsonc"), `{
+  "plugin": ["other-plugin", ${JSON.stringify(dirUrl(legacyShim))}, "third-plugin"],
+  "theme": "dark"
+}
+`);
+    install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
+    const parsed = parseConfig(readFileSync(join(cwd, "opencode.jsonc"), "utf8"));
+    assert.deepEqual(parsed.plugins, [
+      "other-plugin",
+      "third-plugin",
+      dirUrl(join(cwd, ".opencode", "plugins", "paradoc")),
+    ]);
+    assert.equal(parsed.theme, "dark");
+  });
+
+  it("leaves a user-owned plugins/paradoc.js file alone", () => {
+    const { root, distDir, home, env } = fixture();
+    const cwd = join(root, "owned");
+    const pluginsRoot = join(cwd, ".opencode", "plugins");
+    mkdirSync(pluginsRoot, { recursive: true });
+    const userShim = join(pluginsRoot, "paradoc.js");
+    writeFileSync(userShim, "export default { id: 'mine', setup() {} };\n");
+    install({ targets: ["opencode"], project: true, home, cwd, env, distDir });
+    assert.equal(readFileSync(userShim, "utf8"), "export default { id: 'mine', setup() {} };\n");
   });
 
   describe("MCP registration", () => {
-    const stripComments = (text: string) => text.replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
     const entryOf = (home: string) => join(home, ".local", "share", "paradoc", "dist", "copilot-cli", "mcp-entry.js");
 
     it("(a) writes both entries pointing at the runtime mcp-entry", () => {
@@ -158,6 +238,23 @@ describe("install", () => {
       const b = fixture();
       install({ targets: ["opencode"], home: b.home, env: b.env, distDir: b.distDir });
       assert.ok(!existsSync(join(b.home, ".copilot")));
+    });
+
+    it("records PARADOC_COPILOT_BIN when a copilot binary is on PATH", () => {
+      const { root, distDir, home, env } = fixture();
+      const bin = join(root, "bin");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "copilot"), "#!/bin/sh\n");
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${bin}${delimiter}${previousPath}`;
+      try {
+        install({ targets: ["opencode"], home, env, distDir });
+      } finally {
+        process.env.PATH = previousPath;
+      }
+      const parsed = parseConfig(readFileSync(join(home, ".config", "opencode", "opencode.jsonc"), "utf8"));
+      const server = parsed.mcp as { servers: { paradoc: { environment?: Record<string, string> } } };
+      assert.equal(server.servers.paradoc.environment?.PARADOC_COPILOT_BIN, join(bin, "copilot"));
     });
 
     it("writes a marked OpenCode /paradoc command at global and project scope", () => {
