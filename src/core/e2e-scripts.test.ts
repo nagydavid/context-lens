@@ -65,6 +65,31 @@ describe("live harness scripts (hermetic guard)", () => {
     }
   }
 
+  // Gate-ON negatives for the fresh-install harness: these fail before packing, installing, or
+  // running a host, so they stay hermetic (no network, no model quota) while proving the harness
+  // names the thing that went wrong instead of exiting silently.
+  const accept = "scripts/accept-fresh-install.mjs";
+
+  it(`${accept} names a missing --source tarball and exits 1`, { timeout: TIMEOUT }, () => {
+    const result = run([accept, "--source", "missing-artifact.tgz"], { ...gateOffEnv(), PARADOC_E2E: "1" });
+    strictEqual(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    ok(result.stderr.includes("source tarball not found: "), result.stderr);
+    ok(result.stderr.includes("missing-artifact.tgz"), result.stderr);
+  });
+
+  it(`${accept} rejects an unknown argument with usage instead of packing`, { timeout: TIMEOUT }, () => {
+    const result = run([accept, "--bogus"], { ...gateOffEnv(), PARADOC_E2E: "1" });
+    strictEqual(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    ok(result.stderr.includes('unknown argument "--bogus"'), result.stderr);
+    ok(result.stderr.includes("--skip-live"), `usage text missing: ${result.stderr}`);
+  });
+
+  it(`${accept} --out without a path fails with a named argument error`, { timeout: TIMEOUT }, () => {
+    const result = run([accept, "--out"], { ...gateOffEnv(), PARADOC_E2E: "1" });
+    strictEqual(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    ok(result.stderr.includes("--out requires a path"), result.stderr);
+  });
+
   it("scripts/bench.mjs runs hermetically", { timeout: TIMEOUT }, () => {
     const result = run(["scripts/bench.mjs", "--iterations", "1", "--latency", "0"]);
     strictEqual(result.status, 0, result.stderr);

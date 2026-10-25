@@ -133,7 +133,11 @@ async function probeVersion(command, fallbackPath, args = ["--version"]) {
     if (candidate !== command && !(await executable(candidate))) continue;
     const result = await run(candidate, args, { cwd: root, env: process.env }, PROBE_TIMEOUT);
     last = { candidate, ...result };
-    if (result.code === 0) return { found: true, path: candidate, version: result.stdout.trim() || result.stderr.trim() };
+    if (result.code === 0) {
+      // Some hosts print an update hint on a second line; the evidence keeps one clean version line.
+      const firstLine = (text) => String(text).split("\n").map((line) => line.trim()).filter(Boolean)[0] ?? "";
+      return { found: true, path: candidate, version: firstLine(result.stdout) || firstLine(result.stderr) };
+    }
   }
   return { found: false, path: null, version: null, detail: last ? `exit=${last.code ?? "spawn-failed"} ${last.stderr.trim().split("\n")[0]}` : "no candidate" };
 }
@@ -391,7 +395,11 @@ function jsonRecords(text) {
   return records;
 }
 
-/** The OpenCode harness prints one JSON record per scenario; merge the fields it reports. */
+/**
+ * The OpenCode harness prints one JSON record per scenario; merge the fields it reports, renamed to
+ * the shared interception metric shape (`excerptLines` / `fileLines`) used by the repro evidence and
+ * the Copilot collector, so every `runs[]` entry is comparable across hosts.
+ */
 function parseOpenCodeHarness(text) {
   const merged = {};
   for (const key of ["ok", "linesReturned", "totalLines", "confidence", "elapsedMs", "modelSource", "hostVersion", "chunks", "concurrencyPinned", "childModelCall"]) {
@@ -399,6 +407,8 @@ function parseOpenCodeHarness(text) {
       if (merged[key] === undefined && record?.[key] !== undefined) merged[key] = record[key];
     }
   }
+  if (merged.linesReturned !== undefined) merged.excerptLines = merged.linesReturned;
+  if (merged.totalLines !== undefined) merged.fileLines = merged.totalLines;
   return merged;
 }
 
@@ -501,9 +511,10 @@ async function executeLiveRun(definition, context) {
   if (definition.host === "opencode") {
     env.E2E_AGENT_MODEL = OPENCODE_MODEL;
     env.E2E_SUBAGENT_MODEL = OPENCODE_MODEL;
-    // The installed registration lives here; the harness still isolates its own per-attempt config
-    // home, so the real ~/.config/opencode is never read or written.
-    env.XDG_CONFIG_HOME = context.configHome;
+    // The installed registration lives under this XDG root (`<root>/opencode/opencode.jsonc`). The
+    // harness still isolates its own per-attempt config home, so the real ~/.config/opencode is
+    // never read or written; the installed plugin module is reached through PARADOC_E2E_DIST.
+    env.XDG_CONFIG_HOME = context.xdgConfigHome;
     env.E2E_DUMP = join(context.logDir, `opencode-${definition.scenario}.log`);
   } else {
     env.PARADOC_MODEL = COPILOT_MODEL;
@@ -644,7 +655,7 @@ async function main() {
     { host: "copilot", scenario: "large", script: "scripts/e2e-copilot.mjs" },
     { host: "copilot", scenario: "pass-through", script: "scripts/e2e-copilot.mjs" },
   ];
-  const context = { runtime, configHome: seeded.configDir, logDir, sourceKind: source.kind };
+  const context = { runtime, xdgConfigHome: join(home, "config"), logDir, sourceKind: source.kind };
   for (const definition of definitions) {
     if (definition.host === "opencode" && !opencode.found) {
       evidence.runs.push({ host: definition.host, scenario: definition.scenario, status: "SKIP", reason: `opencode binary not found (${opencode.detail})`, harness: definition.script });
