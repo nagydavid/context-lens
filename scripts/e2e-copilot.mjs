@@ -9,9 +9,15 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const root = resolve(import.meta.dirname, "..");
-const dist = join(root, "dist", "copilot-cli");
+// PARADOC_E2E_DIST points the harness at an installed runtime **root** (the directory that contains
+// `dist/`, i.e. `<XDG_DATA_HOME>/paradoc`), so the throwaway project's extension shim re-exports
+// the packed/published entry instead of this checkout's build. Default behaviour (unset) is unchanged.
+const runtimeRoot = process.env.PARADOC_E2E_DIST ?? root;
+const dist = join(runtimeRoot, "dist", "copilot-cli");
 const entryModule = join(dist, "extension-entry.js");
-const fixtureModule = join(dist, "probe-fixture.js");
+// Harness fixtures are deliberately not shipped in the package, so they always resolve from the
+// checkout even when the extension entry under test comes from an installed runtime.
+const fixtureModule = join(root, "dist", "copilot-cli", "probe-fixture.js");
 const mcpEntryModule = join(dist, "mcp-entry.js");
 // Minimum, not exact: the extension contract is stable across patch releases, and an exact pin
 // produced constant WARN noise on every newer host.

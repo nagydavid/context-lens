@@ -22,6 +22,9 @@ const harnesses = [
   { script: "scripts/e2e-opencode.mjs", scenario: "cache" },
   { script: "scripts/e2e-copilot.mjs", scenario: "cache-repeat" },
   { script: "scripts/e2e-commands.mjs", scenario: "lifecycle" },
+  // The fresh-install acceptance harness: its gate runs before argument parsing, so even an
+  // unsupported `--scenario` value must still SKIP rather than reach the argument parser.
+  { script: "scripts/accept-fresh-install.mjs", scenario: "large" },
 ];
 
 describe("live harness scripts (hermetic guard)", () => {
@@ -39,6 +42,9 @@ describe("live harness scripts (hermetic guard)", () => {
       }
       if (script.includes("commands")) {
         strictEqual(result.stdout.trim(), "SKIP command e2e (set PARADOC_E2E=1)");
+      }
+      if (script.includes("accept-fresh-install")) {
+        strictEqual(result.stdout.trim(), "SKIP fresh-install acceptance (set PARADOC_E2E=1)");
       }
     });
 

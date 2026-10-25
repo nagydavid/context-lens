@@ -29,8 +29,14 @@ import { pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dirname, "..");
-const dist = join(root, "dist", "opencode");
-const fixtureModule = join(dist, "e2e-fixture.js");
+// PARADOC_E2E_DIST points the harness at an installed runtime **root** (the directory that contains
+// `dist/`, i.e. `<XDG_DATA_HOME>/paradoc`), so the same scenario can prove a packed/published
+// artifact instead of this checkout's build. Default behaviour (unset) is unchanged.
+const runtimeRoot = process.env.PARADOC_E2E_DIST ?? root;
+const dist = join(runtimeRoot, "dist", "opencode");
+// Harness fixtures are deliberately not shipped in the package, so they always resolve from the
+// checkout even when the plugin under test comes from an installed runtime.
+const fixtureModule = join(root, "dist", "opencode", "e2e-fixture.js");
 const pluginModule = join(dist, "plugin-v2.js");
 let E2E_FIXTURE_LINES, E2E_FIXTURE_SYMBOL, E2E_LARGE_FIXTURE_LINES, E2E_LARGE_FIXTURE_SYMBOL;
 const scenario = process.argv.includes("--scenario")
@@ -345,7 +351,7 @@ async function scenarioWeb(ctx, temp, configHome) {
   const fixturePath = await setupProject(temp, configHome, ctx.model, ctx.fixture);
   const jsonlPath = join(temp, "paradoc-mcp.jsonl");
   // D020 (OpenCode v2): servers live under mcp.servers, command is an array, env key is `environment`.
-  const mcpEntry = join(root, "dist", "copilot-cli", "mcp-entry.js");
+  const mcpEntry = join(runtimeRoot, "dist", "copilot-cli", "mcp-entry.js");
   const configPath = join(temp, "opencode.jsonc");
   const config = JSON.parse(await readFile(configPath, "utf8"));
   config.mcp = { servers: { paradoc: { type: "local", command: [process.execPath, mcpEntry], environment: { PARADOC_LOG_FILE: jsonlPath } } } };
