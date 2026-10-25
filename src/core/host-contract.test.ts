@@ -10,6 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 // Only git-tracked docs/ artifacts are read here — never .gsd/ working files.
 const DOC = "docs/m008-host-interception-contract.md";
 const EVIDENCE = "docs/m008-repro-evidence.json";
+const FRESH_EVIDENCE = "docs/m008-fresh-install-evidence.json";
 
 interface EvidenceRun {
   host: string;
@@ -26,13 +27,22 @@ interface EvidenceRun {
   };
 }
 interface Evidence {
-  package: { checkout: string; published: string };
+  package: { version: string; checkout: string; published: string };
   branch: { headCommit: string; tagBranches?: Record<string, string[]> };
   runs: EvidenceRun[];
 }
 
 const doc = readFileSync(resolve(root, DOC), "utf8");
 const evidence: Evidence = JSON.parse(readFileSync(resolve(root, EVIDENCE), "utf8"));
+
+// The installed-artifact proof (S03). Read defensively: the section only has to quote whatever
+// the harness actually recorded.
+let fresh: { installedVersion?: string; source?: { sha256?: string }; runs?: { host: string; scenario: string; status: string; elapsedMs?: number; interceptedCount?: number }[] } | null = null;
+try {
+  fresh = JSON.parse(readFileSync(resolve(root, FRESH_EVIDENCE), "utf8"));
+} catch {
+  fresh = null;
+}
 
 const headings = [
   "## Verified host versions",
@@ -76,6 +86,14 @@ describe("M008 host interception contract doc", () => {
     ok(doc.includes("docs/m008-repro-evidence.json"), "no link to the evidence JSON");
   });
 
+  it("documents fresh-install acceptance and links the installed-artifact evidence", () => {
+    ok(doc.includes("## Fresh-install acceptance"), "missing Fresh-install acceptance section");
+    ok(
+      doc.includes("docs/m008-fresh-install-evidence.json"),
+      "no link to the fresh-install (installed-artifact) evidence JSON"
+    );
+  });
+
   it("documents the offset-only eligibility rule and the bare-limit policy", () => {
     ok(doc.includes("offset"), "no offset rule");
     ok(/bare `limit`/.test(doc), "bare-limit policy missing");
@@ -87,10 +105,17 @@ describe("M008 host interception contract doc", () => {
 });
 
 describe("M008 reproduction evidence JSON", () => {
-  it("has a package block with checkout and published versions", () => {
+  it("has a package block with version, checkout and published versions", () => {
     ok(evidence.package && typeof evidence.package === "object", "missing package block");
+    strictEqual(typeof evidence.package.version, "string", "package.version missing");
     strictEqual(typeof evidence.package.checkout, "string");
     strictEqual(typeof evidence.package.published, "string");
+    // The release stamp and the checkout stamp must not disagree.
+    strictEqual(
+      evidence.package.version,
+      evidence.package.checkout,
+      "package.version must equal package.checkout"
+    );
   });
 
   it("has a branch block with head commit and tag branches", () => {
@@ -143,6 +168,48 @@ describe("M008 reproduction evidence JSON", () => {
         doc.includes(`${run.host} / ${run.scenario}`),
         `doc does not reference ${run.host} / ${run.scenario}`
       );
+    }
+  });
+
+  // The doc claims "every status, version, and number here matches" the evidence, so the numbers
+  // are asserted too: a regenerated evidence file with a stale doc row fails here instead of
+  // silently publishing a wrong number (see L041: evidence + doc must be updated together).
+  it("quotes the measured elapsed time of every PASS run in its own table row", () => {
+    const freshStart = doc.indexOf("## Fresh-install acceptance");
+    ok(freshStart > 0, "Fresh-install acceptance section missing");
+    const checkoutRegion = doc.slice(0, freshStart);
+    const freshRegion = doc.slice(freshStart);
+
+    const rowFor = (region: string, host: string, scenario: string) =>
+      region.split("\n").find((line) => line.startsWith(`| ${host} / ${scenario} |`));
+
+    for (const run of evidence.runs) {
+      if (run.status !== "PASS" || run.interception?.elapsedMs === undefined) continue;
+      const row = rowFor(checkoutRegion, run.host, run.scenario);
+      ok(row, `no contract-doc table row for ${run.host} / ${run.scenario}`);
+      const quoted = `${Math.round(run.interception.elapsedMs)} ms`;
+      ok(row.includes(quoted), `doc row for ${run.host} / ${run.scenario} does not quote ${quoted}: ${row}`);
+    }
+
+    if (!fresh) return;
+    for (const run of fresh.runs ?? []) {
+      if (run.status !== "PASS" || typeof run.elapsedMs !== "number") continue;
+      const row = rowFor(freshRegion, run.host, run.scenario);
+      ok(row, `no fresh-install table row for ${run.host} / ${run.scenario}`);
+      const quoted = `${Math.round(run.elapsedMs)} ms`;
+      ok(row.includes(quoted), `fresh row for ${run.host} / ${run.scenario} does not quote ${quoted}: ${row}`);
+    }
+  });
+
+  it("fresh-install section quotes the installed version and artifact hash it was generated from", () => {
+    if (!fresh) return; // artifact not present yet (e.g. a partial checkout)
+    ok(typeof fresh.installedVersion === "string" && fresh.installedVersion.length > 0, "fresh evidence has no installedVersion");
+    ok(
+      doc.includes(fresh.installedVersion),
+      `doc does not state installedVersion ${fresh.installedVersion}`
+    );
+    if (fresh.source?.sha256) {
+      ok(doc.includes(fresh.source.sha256), `doc does not quote the artifact sha256 ${fresh.source.sha256}`);
     }
   });
 });

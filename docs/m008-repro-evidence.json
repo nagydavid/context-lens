@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-25T09:57:56.954Z",
+  "generatedAt": "2026-10-25T11:09:23.386Z",
   "hosts": {
     "opencode": "opencode v2.1.0",
     "opencodePath": "opencode",
@@ -9,7 +9,8 @@
   },
   "package": {
     "name": "@davidnagy/paradoc",
-    "checkout": "0.2.2",
+    "version": "0.3.0",
+    "checkout": "0.3.0",
     "published": "0.2.2",
     "tags": [
       "v0.2.0",
@@ -18,9 +19,9 @@
     ]
   },
   "branch": {
-    "headCommit": "57cce4a70cc5a8fbf9a99a0cd786d8d0801a6de7",
+    "headCommit": "63404cd92598f0efd2b4615ad8460ecdf43d6822",
     "headBranch": "milestone/M008",
-    "checkoutVersion": "0.2.2",
+    "checkoutVersion": "0.3.0",
     "publishedVersion": "0.2.2",
     "publishedTag": "v0.2.2",
     "tags": [
@@ -47,27 +48,31 @@
       ]
     },
     "diffStatVsPublishedTag": {
-      "summary": "19 files changed, 133 insertions(+), 2465 deletions(-)",
+      "summary": "23 files changed, 145 insertions(+), 3663 deletions(-)",
       "files": [
         "README.md                               |  14 +-",
-        "docs/m008-host-interception-contract.md | 209 --------",
-        "docs/m008-repro-evidence.json           | 207 --------",
-        "package-lock.json                       |   4 -",
-        "scripts/e2e-copilot.mjs                 |  19 +-",
-        "scripts/e2e-opencode.mjs                |  16 +-",
-        "scripts/repro-host-interception.mjs     | 452 ----------------",
-        "src/cli/install.test.ts                 | 127 +----",
-        "src/cli/install.ts                      | 155 +-----",
+        "docs/m008-fresh-install-evidence.json   | 200 -------",
+        "docs/m008-host-interception-contract.md | 220 --------",
+        "docs/m008-repro-evidence.json           | 209 --------",
+        "package-lock.json                       |   8 +-",
+        "package.json                            |   2 +-",
+        "scripts/accept-fresh-install.mjs        | 684 -----------------------",
+        "scripts/e2e-copilot.mjs                 |  29 +-",
+        "scripts/e2e-opencode.mjs                |  36 +-",
+        "scripts/repro-host-interception.mjs     | 453 ----------------",
+        "src/cli/install.test.ts                 | 231 +-------",
+        "src/cli/install.ts                      | 243 +--------",
+        "src/cli/main.test.ts                    |   3 +-",
         "src/copilot-cli/hooks.test.ts           |  19 +-",
         "src/copilot-cli/hooks.ts                |   9 +-",
         "src/copilot-cli/host-parity.test.ts     |  29 +-",
-        "src/core/e2e-scripts.test.ts            |  28 -",
-        "src/core/host-contract.test.ts          | 148 ------",
+        "src/core/e2e-scripts.test.ts            |  59 --",
+        "src/core/host-contract.test.ts          | 148 -----",
         "src/core/interceptor.test.ts            |   2 -",
         "src/opencode/hooks.test.ts              |  23 +-",
         "src/opencode/hooks.ts                   |  28 +-",
-        "src/opencode/plugin-v2.test.ts          | 891 ++------------------------------",
-        "src/opencode/plugin-v2.ts               | 218 +-------"
+        "src/opencode/plugin-v2.test.ts          | 925 ++------------------------------",
+        "src/opencode/plugin-v2.ts               | 234 +-------"
       ]
     }
   },
@@ -90,7 +95,7 @@
       "exitCode": 0,
       "signal": null,
       "timedOut": false,
-      "wallMs": 28959,
+      "wallMs": 11688,
       "harness": "scripts/e2e-opencode.mjs",
       "interception": {
         "source": "opencode-harness-json",
@@ -98,12 +103,12 @@
         "excerptLines": 6,
         "fileLines": 400,
         "confidence": 5,
-        "elapsedMs": 3732,
+        "elapsedMs": 3768,
         "modelSource": "project",
         "hostVersion": "opencode v2.1.0",
         "childModelCall": "generate.text"
       },
-      "logTail": "{\"hostVersion\":\"opencode v2.1.0\",\"agentModel\":\"openai/gpt-5.6-terra\",\"subagentModel\":\"openai/gpt-5.6-terra\",\"scenario\":\"happy\",\"ok\":true,\"elapsedMs\":3732,\"confidence\":5,\"linesReturned\":6,\"modelSource\":\"project\",\"childModelCall\":\"generate.text\",\"totalLines\":400,\"attempts\":2}\n{\"ok\":true,\"hostVersion\":\"opencode v2.1.0\",\"elapsedMs\":3732,\"totalWallMs\":28872,\"confidence\":5,\"modelSource\":\"project\"}\nretrying happy after: interception exceeded 5000ms: 5328ms"
+      "logTail": "{\"hostVersion\":\"opencode v2.1.0\",\"agentModel\":\"openai/gpt-5.6-terra\",\"subagentModel\":\"openai/gpt-5.6-terra\",\"scenario\":\"happy\",\"ok\":true,\"elapsedMs\":3768,\"confidence\":5,\"linesReturned\":6,\"modelSource\":\"project\",\"childModelCall\":\"generate.text\",\"totalLines\":400,\"attempts\":1}\n{\"ok\":true,\"hostVersion\":\"opencode v2.1.0\",\"elapsedMs\":3768,\"totalWallMs\":11586,\"confidence\":5,\"modelSource\":\"project\"}"
     },
     {
       "host": "opencode",
@@ -113,7 +118,7 @@
       "exitCode": 0,
       "signal": null,
       "timedOut": false,
-      "wallMs": 14626,
+      "wallMs": 14183,
       "harness": "scripts/e2e-opencode.mjs",
       "interception": {
         "source": "opencode-harness-json",
@@ -121,14 +126,14 @@
         "excerptLines": 6,
         "fileLines": 3000,
         "confidence": 5,
-        "elapsedMs": 5984,
+        "elapsedMs": 6437,
         "modelSource": "project",
         "hostVersion": "opencode v2.1.0",
         "chunks": 4,
         "concurrencyPinned": false,
         "childModelCall": "generate.text"
       },
-      "logTail": "{\"hostVersion\":\"opencode v2.1.0\",\"agentModel\":\"openai/gpt-5.6-terra\",\"subagentModel\":\"openai/gpt-5.6-terra\",\"scenario\":\"large\",\"ok\":true,\"concurrencyPinned\":false,\"concurrency\":3,\"totalLines\":3000,\"elapsedMs\":5984,\"confidence\":5,\"linesReturned\":6,\"modelSource\":\"project\",\"childModelCall\":\"generate.text\",\"chunks\":4,\"attempts\":1}\n{\"ok\":true,\"hostVersion\":\"opencode v2.1.0\",\"totalWallMs\":14542,\"chunks\":4,\"concurrencyPinned\":false}"
+      "logTail": "{\"hostVersion\":\"opencode v2.1.0\",\"agentModel\":\"openai/gpt-5.6-terra\",\"subagentModel\":\"openai/gpt-5.6-terra\",\"scenario\":\"large\",\"ok\":true,\"concurrencyPinned\":false,\"concurrency\":3,\"totalLines\":3000,\"elapsedMs\":6437,\"confidence\":5,\"linesReturned\":6,\"modelSource\":\"project\",\"childModelCall\":\"generate.text\",\"chunks\":4,\"attempts\":1}\n{\"ok\":true,\"hostVersion\":\"opencode v2.1.0\",\"totalWallMs\":14093,\"chunks\":4,\"concurrencyPinned\":false}"
     },
     {
       "host": "copilot",
@@ -138,25 +143,25 @@
       "exitCode": 0,
       "signal": null,
       "timedOut": false,
-      "wallMs": 16221,
+      "wallMs": 17165,
       "harness": "scripts/e2e-copilot.mjs",
       "interception": {
         "source": "copilot-plugin-log",
-        "logPath": "/tmp/paradoc-copilot-e2e-LML2tq/paradoc.jsonl",
+        "logPath": "/tmp/paradoc-copilot-e2e-SQthpY/paradoc.jsonl",
         "recordCount": 1,
         "interceptedCount": 1,
         "fallbackCount": 0,
         "intercepted": true,
-        "message": "intercepted /tmp/paradoc-copilot-e2e-LML2tq/big.ts (400 lines, confidence 5, 8361ms)",
-        "path": "/tmp/paradoc-copilot-e2e-LML2tq/big.ts",
+        "message": "intercepted /tmp/paradoc-copilot-e2e-SQthpY/big.ts (400 lines, confidence 5, 8477ms)",
+        "path": "/tmp/paradoc-copilot-e2e-SQthpY/big.ts",
         "fileLines": 400,
         "confidence": 5,
-        "elapsedMs": 8361.258963999999,
-        "tokensSaved": 5606,
+        "elapsedMs": 8477.293793,
+        "tokensSaved": 5596,
         "modelSource": "env",
-        "excerptLines": 6
+        "excerptLines": 8
       },
-      "logTail": "INFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nPASS happy\nproject=/tmp/paradoc-copilot-e2e-LML2tq\nlog-dir=/tmp/paradoc-copilot-e2e-LML2tq/logs\ntranscript=/tmp/paradoc-copilot-e2e-LML2tq/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-LML2tq/paradoc.jsonl\nlog-source=jsonl"
+      "logTail": "INFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nPASS happy\nproject=/tmp/paradoc-copilot-e2e-SQthpY\nlog-dir=/tmp/paradoc-copilot-e2e-SQthpY/logs\ntranscript=/tmp/paradoc-copilot-e2e-SQthpY/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-SQthpY/paradoc.jsonl\nlog-source=jsonl"
     },
     {
       "host": "copilot",
@@ -166,16 +171,16 @@
       "exitCode": 0,
       "signal": null,
       "timedOut": false,
-      "wallMs": 7972,
+      "wallMs": 9239,
       "harness": "scripts/e2e-copilot.mjs",
       "interception": {
         "source": "copilot-plugin-log",
-        "logPath": "/tmp/paradoc-copilot-e2e-aB5Vhp/paradoc.jsonl",
+        "logPath": "/tmp/paradoc-copilot-e2e-Csn6m5/paradoc.jsonl",
         "recordCount": 1,
         "interceptedCount": 0,
         "fallbackCount": 0
       },
-      "logTail": "INFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nPASS pass-through\nproject=/tmp/paradoc-copilot-e2e-aB5Vhp\nlog-dir=/tmp/paradoc-copilot-e2e-aB5Vhp/logs\ntranscript=/tmp/paradoc-copilot-e2e-aB5Vhp/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-aB5Vhp/paradoc.jsonl\nlog-source=jsonl"
+      "logTail": "INFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nPASS pass-through\nproject=/tmp/paradoc-copilot-e2e-Csn6m5\nlog-dir=/tmp/paradoc-copilot-e2e-Csn6m5/logs\ntranscript=/tmp/paradoc-copilot-e2e-Csn6m5/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-Csn6m5/paradoc.jsonl\nlog-source=jsonl"
     },
     {
       "host": "copilot",
@@ -185,25 +190,25 @@
       "exitCode": 0,
       "signal": null,
       "timedOut": false,
-      "wallMs": 16692,
+      "wallMs": 16277,
       "harness": "scripts/e2e-copilot.mjs",
       "interception": {
         "source": "copilot-plugin-log",
-        "logPath": "/tmp/paradoc-copilot-e2e-gnkrig/paradoc.jsonl",
+        "logPath": "/tmp/paradoc-copilot-e2e-62iLns/paradoc.jsonl",
         "recordCount": 1,
         "interceptedCount": 1,
         "fallbackCount": 0,
         "intercepted": true,
-        "message": "intercepted /tmp/paradoc-copilot-e2e-gnkrig/big.ts (400 lines, confidence 5, 8738ms)",
-        "path": "/tmp/paradoc-copilot-e2e-gnkrig/big.ts",
+        "message": "intercepted /tmp/paradoc-copilot-e2e-62iLns/big.ts (400 lines, confidence 5, 8189ms)",
+        "path": "/tmp/paradoc-copilot-e2e-62iLns/big.ts",
         "fileLines": 400,
         "confidence": 5,
-        "elapsedMs": 8738.231117,
-        "tokensSaved": 5604,
+        "elapsedMs": 8188.577590000001,
+        "tokensSaved": 5605,
         "modelSource": "global",
         "excerptLines": 6
       },
-      "logTail": "INFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nPASS happy\nproject=/tmp/paradoc-copilot-e2e-gnkrig\nlog-dir=/tmp/paradoc-copilot-e2e-gnkrig/logs\ntranscript=/tmp/paradoc-copilot-e2e-gnkrig/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-gnkrig/paradoc.jsonl\nlog-source=jsonl"
+      "logTail": "INFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nPASS happy\nproject=/tmp/paradoc-copilot-e2e-62iLns\nlog-dir=/tmp/paradoc-copilot-e2e-62iLns/logs\ntranscript=/tmp/paradoc-copilot-e2e-62iLns/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-62iLns/paradoc.jsonl\nlog-source=jsonl"
     }
   ]
 }

@@ -256,6 +256,9 @@ async function collectPackage() {
   const published = npmProbe.code === 0 ? npmProbe.stdout.trim() : null;
   return {
     name: pkg.name,
+    // `version` is the canonical release-stamp field (the release guard reads
+    // `package.version`); `checkout` is kept because src/core/host-contract.test.ts asserts it.
+    version: pkg.version,
     checkout: pkg.version,
     published,
     publishedError: published ? undefined : `npm view failed: ${(npmProbe.stderr || npmProbe.stdout).trim().split("\n")[0] || `exit ${npmProbe.code}`}`,
