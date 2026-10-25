@@ -27,8 +27,24 @@ function installRuntime(distDir: string, dataDir: string): string {
     recursive: true,
     filter: (src) => !/\.(test\.js|js\.map|d\.ts|d\.ts\.map)$/.test(src),
   });
-  writeFileSync(join(dataDir, "package.json"), '{"type":"module"}\n');
+  writeFileSync(join(dataDir, "package.json"), runtimePackageJson(distDir));
   return join(dataDir, "dist");
+}
+
+/**
+ * The installed runtime's own `package.json`. The version comes from the package that shipped this
+ * `dist/`, so `status` and fresh-install evidence can name the release actually running; a bare
+ * `dist/` fixture (unit tests) keeps the version-less stamp.
+ */
+function runtimePackageJson(distDir: string): string {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(distDir, "..", "package.json"), "utf8"));
+    const version = typeof parsed === "object" && parsed !== null ? (parsed as { version?: unknown }).version : undefined;
+    if (typeof version === "string" && version.length > 0) return `{"type":"module","version":${JSON.stringify(version)}}\n`;
+  } catch {
+    // No readable package.json above dist/: keep the minimal ESM stamp.
+  }
+  return '{"type":"module"}\n';
 }
 
 /**
@@ -337,6 +353,75 @@ function registerCopilotMcp(configPath: string, mcpEntry: string): boolean {
   return true;
 }
 
+/** Locates the value span of the member `key` directly inside the object opened at `open`. */
+function findMemberValue(text: string, open: number, key: string): { from: number; to: number; raw: string } | undefined {
+  const close = matchBrace(text, open);
+  if (close < 0) return undefined;
+  let depth = 0;
+  const toks = [...significant(text, open, close + 1)];
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k];
+    if (t.ch === "{" || t.ch === "[") depth++;
+    else if (t.ch === "}" || t.ch === "]") depth--;
+    else if (t.ch === '"' && depth === 1 && toks[k + 1]?.ch === ":" && JSON.parse(text.slice(t.i, t.end + 1)) === key) {
+      const value = toks[k + 2];
+      // A key with no value token is already-broken JSON: report it (empty raw) rather than insert a duplicate key.
+      if (!value) return { from: t.i, to: t.i, raw: "" };
+      let vdepth = 0;
+      let to = close;
+      for (let j = k + 2; j < toks.length; j++) {
+        const v = toks[j];
+        if (v.i >= close) break;
+        if (v.ch === "{" || v.ch === "[") vdepth++;
+        else if (v.ch === "}" || v.ch === "]") vdepth--;
+        else if (v.ch === "," && vdepth === 0) {
+          to = v.i;
+          break;
+        }
+      }
+      return { from: value.i, to, raw: text.slice(value.i, to).trim() };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Enables Copilot's `experimental` flag, which gates extension loading: without it a fresh install
+ * silently loads no ParaDoc hook. Text insertion keeps unrelated settings and formatting intact, an
+ * existing `true` is left byte-identical, and an explicit `false` is the user's choice, so it is
+ * reported as a warning instead of being overwritten. Returns the lines to report (none when the
+ * file already enabled extensions).
+ */
+function enableCopilotExperimental(configPath: string): string[] {
+  let config = "";
+  try {
+    config = readFileSync(configPath, "utf8");
+  } catch {
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(configPath, '{\n  "experimental": true\n}\n');
+    return [`copilot-settings: ${configPath}`];
+  }
+  if (config.trim() === "") {
+    writeFileSync(configPath, '{\n  "experimental": true\n}\n');
+    return [`copilot-settings: ${configPath}`];
+  }
+  const rootOpen = config.indexOf("{");
+  if (rootOpen < 0) throw new Error(`Copilot settings is not a JSON object: ${configPath}`);
+  const rootClose = matchBrace(config, rootOpen);
+  if (rootClose < 0) throw new Error(`Copilot settings is not a JSON object: ${configPath}`);
+
+  const value = findMemberValue(config, rootOpen, "experimental");
+  if (!value) {
+    writeFileSync(configPath, insertFirstMember(config, rootOpen, rootClose, '"experimental": true'));
+    return [`copilot-settings: ${configPath}`];
+  }
+  if (value.raw === "true") return [];
+  if (value.raw === "false") {
+    return [`copilot: experimental is false in ${configPath}; the ParaDoc extension will not load until you enable it`];
+  }
+  return [`copilot: experimental has an unexpected value (${value.raw || "missing"}) in ${configPath}; the ParaDoc extension may not load`];
+}
+
 /** Returns one human-readable line per file written. */
 export function install(options: InstallOptions): string[] {
   const env = options.env ?? process.env;
@@ -380,6 +465,7 @@ export function install(options: InstallOptions): string[] {
       const mcpConfig = join(home, ".copilot", "mcp-config.json");
       registerCopilotMcp(mcpConfig, mcpEntry);
       written.push(`copilot-mcp: ${mcpConfig}`);
+      written.push(...enableCopilotExperimental(join(home, ".copilot", "settings.json")));
     }
   }
   return written;

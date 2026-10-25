@@ -142,6 +142,110 @@ describe("install", () => {
     assert.equal(readFileSync(userShim, "utf8"), "export default { id: 'mine', setup() {} };\n");
   });
 
+  it("stamps the installed runtime with the version of the package that shipped dist", () => {
+    const { root, distDir, home, env } = fixture();
+    writeFileSync(join(root, "package.json"), '{"name":"@davidnagy/paradoc","version":"0.3.0"}\n');
+    install({ targets: ["opencode", "copilot"], home, env, distDir });
+    const runtime = join(home, ".local", "share", "paradoc");
+    assert.equal(readFileSync(join(runtime, "package.json"), "utf8"), '{"type":"module","version":"0.3.0"}\n');
+  });
+
+  it("keeps the version-less runtime stamp when the shipped package.json is unreadable", () => {
+    const { root, distDir, home, env } = fixture();
+    writeFileSync(join(root, "package.json"), "{ not json");
+    install({ targets: ["copilot"], home, env, distDir });
+    assert.equal(readFileSync(join(home, ".local", "share", "paradoc", "package.json"), "utf8"), '{"type":"module"}\n');
+  });
+
+  describe("Copilot experimental settings", () => {
+    const settingsOf = (home: string) => join(home, ".copilot", "settings.json");
+    const wroteSettings = (lines: string[]) => lines.some((line) => line.startsWith("copilot-settings:"));
+
+    it("creates settings.json with experimental enabled when the file is missing", () => {
+      const { distDir, home, env } = fixture();
+      const lines = install({ targets: ["copilot"], home, env, distDir });
+      assert.ok(lines.includes(`copilot-settings: ${settingsOf(home)}`), lines.join(" | "));
+      assert.deepEqual(JSON.parse(readFileSync(settingsOf(home), "utf8")), { experimental: true });
+      // The file it just wrote is already enabled, so a re-run reports nothing further.
+      const again = install({ targets: ["copilot"], home, env, distDir });
+      assert.ok(!wroteSettings(again), "an enabled setting must not be rewritten");
+    });
+
+    it("inserts experimental into existing settings and preserves unrelated keys", () => {
+      const { distDir, home, env } = fixture();
+      mkdirSync(join(home, ".copilot"), { recursive: true });
+      writeFileSync(settingsOf(home), '{\n  "model": "gpt-5",\n  "instructions": ["rules.md"]\n}\n');
+      install({ targets: ["copilot"], home, env, distDir });
+      const parsed = JSON.parse(readFileSync(settingsOf(home), "utf8")) as Record<string, unknown>;
+      assert.equal(parsed.experimental, true);
+      assert.equal(parsed.model, "gpt-5");
+      assert.deepEqual(parsed.instructions, ["rules.md"]);
+    });
+
+    it("leaves an already-enabled experimental byte-identical across re-runs", () => {
+      const { distDir, home, env } = fixture();
+      mkdirSync(join(home, ".copilot"), { recursive: true });
+      const original = '{\n  "experimental": true,\n  "model": "gpt-5"\n}\n';
+      writeFileSync(settingsOf(home), original);
+      const first = install({ targets: ["copilot"], home, env, distDir });
+      assert.ok(!wroteSettings(first), "nothing to write when the flag is already on");
+      assert.equal(readFileSync(settingsOf(home), "utf8"), original);
+      install({ targets: ["copilot"], home, env, distDir });
+      assert.equal(readFileSync(settingsOf(home), "utf8"), original);
+    });
+
+    it("reports an explicit false without overwriting the user's choice", () => {
+      const { distDir, home, env } = fixture();
+      mkdirSync(join(home, ".copilot"), { recursive: true });
+      const original = '{\n  "experimental": false,\n  "model": "gpt-5"\n}\n';
+      writeFileSync(settingsOf(home), original);
+      const lines = install({ targets: ["copilot"], home, env, distDir });
+      assert.equal(readFileSync(settingsOf(home), "utf8"), original, "an explicit false must survive");
+      assert.ok(!wroteSettings(lines));
+      const warning = lines.find((line) => line.includes("experimental is false"));
+      assert.ok(warning, `expected a warning line, got: ${lines.join(" | ")}`);
+      assert.ok(warning.includes(settingsOf(home)), warning);
+      assert.ok(warning.includes("will not load"), warning);
+    });
+
+    it("repairs an empty settings file", () => {
+      const { distDir, home, env } = fixture();
+      mkdirSync(join(home, ".copilot"), { recursive: true });
+      writeFileSync(settingsOf(home), "\n");
+      install({ targets: ["copilot"], home, env, distDir });
+      assert.deepEqual(JSON.parse(readFileSync(settingsOf(home), "utf8")), { experimental: true });
+    });
+
+    it("warns instead of rewriting a non-boolean experimental value", () => {
+      const { distDir, home, env } = fixture();
+      mkdirSync(join(home, ".copilot"), { recursive: true });
+      const original = '{\n  "experimental": "yes",\n  "model": "gpt-5"\n}\n';
+      writeFileSync(settingsOf(home), original);
+      const lines = install({ targets: ["copilot"], home, env, distDir });
+      assert.equal(readFileSync(settingsOf(home), "utf8"), original, "no duplicate key may be inserted");
+      assert.ok(lines.some((line) => line.includes("unexpected value")), lines.join(" | "));
+    });
+
+    it("does not insert a duplicate key when the experimental member is already broken", () => {
+      const { distDir, home, env } = fixture();
+      mkdirSync(join(home, ".copilot"), { recursive: true });
+      const original = '{\n  "experimental":,\n  "model": "gpt-5"\n}\n';
+      writeFileSync(settingsOf(home), original);
+      const lines = install({ targets: ["copilot"], home, env, distDir });
+      assert.equal(readFileSync(settingsOf(home), "utf8"), original, "a broken member must not gain a second experimental key");
+      assert.ok(lines.some((line) => line.includes("unexpected value")), lines.join(" | "));
+    });
+
+    it("throws naming an unparseable settings file without modifying it", () => {
+      const { distDir, home, env } = fixture();
+      mkdirSync(join(home, ".copilot"), { recursive: true });
+      const file = settingsOf(home);
+      writeFileSync(file, "not json at all");
+      assert.throws(() => install({ targets: ["copilot"], home, env, distDir }), /Copilot settings is not a JSON object/);
+      assert.equal(readFileSync(file, "utf8"), "not json at all");
+    });
+  });
+
   describe("MCP registration", () => {
     const entryOf = (home: string) => join(home, ".local", "share", "paradoc", "dist", "copilot-cli", "mcp-entry.js");
 

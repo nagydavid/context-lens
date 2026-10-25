@@ -249,6 +249,7 @@ describe("paradoc control commands", () => {
     assert.equal(lines[0], `runtime: ${join(f.env.XDG_DATA_HOME ?? "", "paradoc", "dist")}`);
     assert.ok(lines[1]?.startsWith(`copilot: ${join(f.home, ".copilot", "extensions", "paradoc", "extension.mjs")}`), out.stdout);
     assert.ok(lines[2]?.startsWith(`copilot-mcp: ${join(f.home, ".copilot", "mcp-config.json")}`), out.stdout);
-    assert.equal(lines[3], "Restart opencode / copilot to load ParaDoc.");
+    assert.ok(lines[3]?.startsWith(`copilot-settings: ${join(f.home, ".copilot", "settings.json")}`), out.stdout);
+    assert.equal(lines[4], "Restart opencode / copilot to load ParaDoc.");
   });
 });
