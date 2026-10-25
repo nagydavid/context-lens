@@ -5,7 +5,13 @@ import {
   isRecord,
 } from "../core/host-runtime.js";
 import { renderInterceptionResult } from "../core/render.js";
-import type { JudgeOptions, PdfExtractor, ResultCache, SubagentRunner } from "../core/index.js";
+import type {
+  JudgeOptions,
+  PdfExtractor,
+  ResultCache,
+  SubagentRunner,
+  TuningSettings,
+} from "../core/index.js";
 import { createOpenCodeModelPicker } from "./model-picker.js";
 import type { OpenCodeModelPickerOptions, OpenCodePickerUi } from "./model-picker.js";
 import { createOpenCodeRunner } from "./subagent.js";
@@ -32,8 +38,13 @@ export interface ParaDocHooksOptions {
   worktree?: string;
   ui?: OpenCodePickerUi;
   pickerOptions?: OpenCodeModelPickerOptions;
-  /** Test seam: replaces the OpenCode child-session runner. */
-  runner?: SubagentRunner;
+  /**
+   * Test seam: replaces the OpenCode child-session runner. A factory receives the resolved
+   * tuning (the v2 plugin uses it to build a `ctx.generate.text` runner at the tuned
+   * concurrency). Omitting it keeps the child-session runner, which is what registers child
+   * session IDs in `childSessions`.
+   */
+  runner?: SubagentRunner | ((settings: TuningSettings) => SubagentRunner);
   /** Result cache shared by this host process; defaults to a bounded in-memory LRU. */
   cache?: ResultCache;
   thresholdLines?: number;

@@ -1,9 +1,9 @@
-import { deepStrictEqual, notStrictEqual, ok, strictEqual } from "node:assert";
+import { deepStrictEqual, notStrictEqual, ok, rejects, strictEqual } from "node:assert";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { ParaDocV2Plugin, createV2Client } from "./plugin-v2.js";
+import { GenerateTextRunner, ParaDocV2Plugin, createV2Client } from "./plugin-v2.js";
 import type { ParaDocV2Context } from "./plugin-v2.js";
 
 type Fn = (...args: any[]) => any;
@@ -28,7 +28,12 @@ interface Harness {
 
 function makeHarness(
   sessionOverrides: Partial<ParaDocV2Context["session"]> = {},
-  nativeExecute: Fn = async () => ({}),
+  /** Fake `ctx.generate.text`. When present the plugin must prefer it over the session path. */
+  generateText?: Fn,
+  /** Inject a raw `ctx.generate` shape instead (e.g. `{}` to model a host without `.text`). */
+  generateContext?: ParaDocV2Context["generate"],
+  /** Project root, set before setup() so project-scoped tuning/config resolve correctly. */
+  directory?: string,
 ) {
   const calls: Array<[string, unknown]> = [];
   const sessionHooks: Record<string, (event: any) => Promise<void>> = {};
@@ -36,7 +41,7 @@ function makeHarness(
   let toolHookCalled = false;
 
   const ctx: ParaDocV2Context = {
-    location: { directory: "/tmp/does-not-matter" },
+    location: { directory: directory ?? "/tmp/does-not-matter" },
     tool: {
       transform: (cb) => {
         transformCb = cb;
@@ -69,6 +74,11 @@ function makeHarness(
       },
       ...sessionOverrides,
     },
+    ...(generateContext !== undefined
+      ? { generate: generateContext }
+      : generateText
+        ? { generate: { text: generateText } }
+        : {}),
   };
 
   const dispose = ParaDocV2Plugin.setup(ctx);
@@ -518,6 +528,262 @@ describe("ParaDocV2Plugin tuning", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Child model call: ctx.generate.text preferred, child-session fallback
+// ---------------------------------------------------------------------------
+
+const ANSWER = JSON.stringify({
+  excerpts: [{ startLine: 10, endLine: 12 }],
+  summary: "s",
+  confidence: 4,
+});
+
+describe("ParaDocV2Plugin child model call (ctx.generate.text)", () => {
+  it("prefers ctx.generate.text and never touches the session API", async () => {
+    const { dir, file, content } = makeProject("paradoc-v2-gentext-");
+    const saved = { ...process.env };
+    try {
+      useProjectEnv(dir);
+      const payloads: Array<Record<string, unknown>> = [];
+      const h = makeHarness({}, async (payload: Record<string, unknown>) => {
+        payloads.push(payload);
+        return { text: ANSWER };
+      }, undefined, dir);
+
+      const nativeResult = { output: content, content };
+      const exec = h.wrapReadTool(async () => nativeResult);
+      const result = await exec({ path: file }, { sessionID: "s", id: "c" });
+
+      strictEqual(result, nativeResult, "the native result object is still returned");
+      ok(result.output.includes("lines 10-12"), "generate.text output should be condensed");
+      strictEqual(payloads.length, 1, "exactly one stateless generation per read");
+      deepStrictEqual(h.calls.map(([name]) => name), [], "no child session is created or prompted");
+    } finally {
+      restoreEnv(saved);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("maps the core model ref to {providerID, id} and never forwards schema", async () => {
+    const { dir, file, content } = makeProject("paradoc-v2-model-");
+    const saved = { ...process.env };
+    try {
+      useProjectEnv(dir);
+      const payloads: Array<Record<string, unknown>> = [];
+      const h = makeHarness({}, async (payload: Record<string, unknown>) => {
+        payloads.push(payload);
+        return { text: ANSWER };
+      }, undefined, dir);
+
+      const exec = h.wrapReadTool(async () => ({ output: content, content }));
+      await exec({ path: file }, { sessionID: "s", id: "c" });
+
+      const payload = payloads[0];
+      deepStrictEqual(payload.model, { providerID: "p", id: "m" }, "modelID becomes id");
+      strictEqual("schema" in payload, false, "request.schema is not forwarded to generate.text");
+      ok(typeof payload.prompt === "string" && (payload.prompt as string).length > 0, "prompt is sent");
+    } finally {
+      restoreEnv(saved);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts bare string, {text}, and {data:{text}} return shapes", async () => {
+    for (const shape of [ANSWER, { text: ANSWER }, { data: { text: ANSWER } }]) {
+      const { dir, file, content } = makeProject("paradoc-v2-shape-");
+      const saved = { ...process.env };
+      try {
+        useProjectEnv(dir);
+        const h = makeHarness({}, async () => shape, undefined, dir);
+        const nativeResult = { output: content, content };
+        const exec = h.wrapReadTool(async () => nativeResult);
+        const result = await exec({ path: file }, { sessionID: "s", id: "c" });
+        ok(
+          result.output.includes("lines 10-12"),
+          `shape ${describeShapeForTest(shape)} should still condense the read`,
+        );
+      } finally {
+        restoreEnv(saved);
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("unreadable return shape keeps the native read and logs subagent-error", async () => {
+    const { dir, file, content } = makeProject("paradoc-v2-badshape-");
+    const saved = { ...process.env };
+    const captured = captureStderr();
+    try {
+      useProjectEnv(dir);
+      const h = makeHarness({}, async () => ({ data: { content: "not text" } }), undefined, dir);
+      const nativeResult = { output: content, content };
+      const exec = h.wrapReadTool(async () => nativeResult);
+      const result = await exec({ path: file }, { sessionID: "s", id: "c" });
+
+      strictEqual(result.output, content, "the native read must survive an unreadable child call");
+      ok(
+        captured.lines.some(
+          (line) => line.includes("fallback subagent-error") && line.includes("generate.text returned no text"),
+        ),
+        `expected a subagent-error fallback log, got: ${captured.lines.join("")}`,
+      );
+    } finally {
+      captured.restore();
+      restoreEnv(saved);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("thrown generate.text keeps the native read and names the seam in the detail", async () => {
+    const { dir, file, content } = makeProject("paradoc-v2-throw-");
+    const saved = { ...process.env };
+    const captured = captureStderr();
+    try {
+      useProjectEnv(dir);
+      const h = makeHarness({}, async () => {
+        throw new Error("model alias not found");
+      }, undefined, dir);
+      const nativeResult = { output: content, content };
+      const exec = h.wrapReadTool(async () => nativeResult);
+      const result = await exec({ path: file }, { sessionID: "s", id: "c" });
+
+      strictEqual(result.output, content, "the native read must proceed on a child failure");
+      ok(
+        captured.lines.some(
+          (line) =>
+            line.includes("fallback subagent-error") &&
+            line.includes("generate.text failed: model alias not found"),
+        ),
+        `expected the alias error in the log, got: ${captured.lines.join("")}`,
+      );
+    } finally {
+      captured.restore();
+      restoreEnv(saved);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a hung generate.text hits the deadline and falls back to the native read", async () => {
+    const { dir, file, content } = makeProject("paradoc-v2-hang-");
+    const saved = { ...process.env };
+    const captured = captureStderr();
+    try {
+      useProjectEnv(dir, { PARADOC_TIMEOUT_MS: "400" });
+      const h = makeHarness({}, () => new Promise<never>(() => {}), undefined, dir);
+      const nativeResult = { output: content, content };
+      const exec = h.wrapReadTool(async () => nativeResult);
+
+      const started = Date.now();
+      const result = await exec({ path: file }, { sessionID: "s", id: "c" });
+      const elapsed = Date.now() - started;
+
+      strictEqual(result.output, content, "a hung generation must not block the read");
+      ok(elapsed < 5000, `the deadline must fire (elapsed ${elapsed}ms)`);
+      ok(
+        captured.lines.some((line) => /fallback (timeout|subagent-error) for .*timed out after \d+ms/.test(line)),
+        `expected a timeout fallback log, got: ${captured.lines.join("")}`,
+      );
+    } finally {
+      captured.restore();
+      restoreEnv(saved);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the child-session runner when ctx.generate.text is absent", async () => {
+    const { dir, file, content } = makeProject("paradoc-v2-session-");
+    const saved = { ...process.env };
+    try {
+      useProjectEnv(dir);
+      const h = makeHarness(
+        {
+          generate: async (p: unknown) => {
+            h.calls.push(["generate", p]);
+            return { data: { text: ANSWER } };
+          },
+        },
+        undefined,
+        undefined,
+        dir,
+      );
+      const exec = h.wrapReadTool(async () => ({ output: content, content }));
+      const result = await exec({ path: file }, { sessionID: "s", id: "c" });
+
+      ok(result.output.includes("lines 10-12"), "the session path still condenses");
+      deepStrictEqual(h.calls.map(([name]) => name), ["create", "switchModel", "generate", "remove"]);
+    } finally {
+      restoreEnv(saved);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back when ctx.generate exists but exposes no text function", async () => {
+    const { dir, file, content } = makeProject("paradoc-v2-partial-");
+    const saved = { ...process.env };
+    try {
+      useProjectEnv(dir);
+      const h = makeHarness(
+        {
+          generate: async (p: unknown) => {
+            h.calls.push(["generate", p]);
+            return { data: { text: ANSWER } };
+          },
+        },
+        undefined,
+        {},
+        dir,
+      );
+      const exec = h.wrapReadTool(async () => ({ output: content, content }));
+      const result = await exec({ path: file }, { sessionID: "s", id: "c" });
+
+      ok(result.output.includes("lines 10-12"), "the session path must be used");
+      ok(h.calls.some(([name]) => name === "create"), "a child session was created");
+    } finally {
+      restoreEnv(saved);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("GenerateTextRunner", () => {
+  it("enforces request.timeoutMs with the shared TimeoutError shape", async () => {
+    const runner = new GenerateTextRunner(() => new Promise<never>(() => {}));
+    const started = Date.now();
+    await rejects(
+      runner.run({ prompt: "p", timeoutMs: 250 }),
+      (error: Error) => {
+        strictEqual(error.name, "TimeoutError");
+        ok(/Subagent timed out after 250ms\./.test(error.message), error.message);
+        return true;
+      },
+    );
+    ok(Date.now() - started < 2000, "the deadline must fire instead of hanging");
+  });
+
+  it("prefixes non-timeout failures so the fallback detail names the seam", async () => {
+    const runner = new GenerateTextRunner(async () => {
+      throw new Error("model alias not found");
+    });
+    await rejects(runner.run({ prompt: "p", timeoutMs: 1000 }), /generate\.text failed: model alias not found/);
+  });
+
+  it("rejects an unreadable return shape instead of returning an empty answer", async () => {
+    const runner = new GenerateTextRunner(async () => ({ data: { output: "x" } }));
+    await rejects(runner.run({ prompt: "p", timeoutMs: 1000 }), /generate\.text returned no text/);
+  });
+
+  it("omits model when the request carries none", async () => {
+    let payload: Record<string, unknown> | undefined;
+    const runner = new GenerateTextRunner(async (p: Record<string, unknown>) => {
+      payload = p;
+      return { text: "t" };
+    });
+    const result = await runner.run({ prompt: "p", timeoutMs: 1000 });
+    deepStrictEqual(result, { text: "t" });
+    strictEqual("model" in (payload ?? {}), false, "no model key when the request has no model");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Session prompt hook
 // ---------------------------------------------------------------------------
 
@@ -601,7 +867,56 @@ function restoreEnv(saved: Record<string, string | undefined>) {
     if (!(key in saved)) delete process.env[key];
   }
   Object.assign(process.env, saved);
-  for (const key of ["PARADOC_CHUNK_LINES", "PARADOC_CONCURRENCY", "PARADOC_CACHE", "PARADOC_THRESHOLD", "PARADOC_JUDGE"]) {
+  for (const key of ["PARADOC_CHUNK_LINES", "PARADOC_CONCURRENCY", "PARADOC_CACHE", "PARADOC_THRESHOLD", "PARADOC_JUDGE", "PARADOC_TIMEOUT_MS"]) {
     if (saved[key] === undefined) delete process.env[key];
   }
+}
+
+/** A temp project with a 3000-line file and a stored model, ready for interception. */
+function makeProject(prefix: string): { dir: string; file: string; content: string } {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(join(dir, ".paradoc"));
+  writeFileSync(
+    join(dir, ".paradoc", "config.json"),
+    JSON.stringify({ version: 1, model: { providerID: "p", modelID: "m" } }),
+  );
+  const file = join(dir, "big.ts");
+  const content = Array.from({ length: 3000 }, (_, i) => `const v_${i + 1} = ${i + 1};`).join("\n");
+  writeFileSync(file, content);
+  return { dir, file, content };
+}
+
+/** Chunking wider than the fixture file, so each read makes exactly one child call. */
+function useProjectEnv(dir: string, extra: Record<string, string> = {}) {
+  process.env.HOME = dir;
+  process.env.XDG_CONFIG_HOME = join(dir, "xdg");
+  process.env.PARADOC_CHUNK_LINES = "4000";
+  delete process.env.PARADOC_CACHE;
+  delete process.env.PARADOC_THRESHOLD;
+  delete process.env.PARADOC_JUDGE;
+  Object.assign(process.env, extra);
+}
+
+/** Capture the plugin's stderr fallback log lines (`[paradoc] warn: fallback ...`). */
+function captureStderr(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const original = process.stderr.write;
+  process.stderr.write = ((chunk: unknown) => {
+    lines.push(typeof chunk === "string" ? chunk : String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  return {
+    lines,
+    restore: () => {
+      process.stderr.write = original;
+    },
+  };
+}
+
+function describeShapeForTest(value: unknown): string {
+  if (typeof value === "string") return "bare string";
+  if (Array.isArray(value)) return "array";
+  const record = value as Record<string, unknown>;
+  const inner = record.data as Record<string, unknown> | undefined;
+  return inner ? `{data:{${Object.keys(inner).join(", ")}}}` : `{${Object.keys(record).join(", ")}}`;
 }
