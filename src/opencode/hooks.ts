@@ -150,14 +150,21 @@ export function createParaDocHooks(options: ParaDocHooksOptions): ParaDocHooks {
     "tool.execute.after": async (input, output) => {
       try {
         if (String(input.tool).toLowerCase() !== "read") return;
+        // Only ParaDoc's own child sessions are skipped. Subagents spawned by the
+        // host `task` tool are NOT in `childSessions`, so their reads ARE intercepted
+        // on purpose: a host subagent reading a whole file is exactly the token waste
+        // ParaDoc exists to remove. ParaDoc's own children are exempt because their
+        // output is already condensed by the subagent prompt.
         if (childSessions.has(input.sessionID)) return;
         const args = input.args;
         if (!isRecord(args)) return;
-        // Ranged reads are explicit requests for exact content; never condense them.
         // OpenCode 1.x exposed `filePath`; v2's native read tool sends `path`.
         const filePath = typeof args.filePath === "string" ? args.filePath : args.path;
         if (typeof filePath !== "string" || filePath === "") return;
-        if (args.offset !== undefined || args.limit !== undefined) {
+        // Offset reads are explicit requests for exact content; never condense them.
+        // A bare `limit` is how models ask for the top of a file, so it is still
+        // condensed.
+        if (args.offset !== undefined) {
           interceptor.noteBypass();
           return;
         }

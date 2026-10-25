@@ -47,7 +47,7 @@ interface HostResult {
   calls: number;
   logs: Array<{ level: string; message: string; fallbackReason?: unknown; detail?: unknown }>;
 }
-type Host = { name: string; read(path: string, opts?: { pdfExtractor?: PdfExtractor; ranged?: boolean }): Promise<HostResult> };
+type Host = { name: string; read(path: string, opts?: { pdfExtractor?: PdfExtractor; ranged?: boolean; bareLimit?: boolean }): Promise<HostResult> };
 
 const NATIVE = "original native read output\n".repeat(400);
 
@@ -65,7 +65,11 @@ const opencodeHost: Host = {
       ...(opts.pdfExtractor ? { pdfExtractor: opts.pdfExtractor } : {}),
     });
     const out = { title: path, output: NATIVE, metadata: {} };
-    const args = opts.ranged ? { filePath: path, offset: 1, limit: 20 } : { filePath: path };
+    const args = opts.ranged
+      ? { filePath: path, offset: 1, limit: 20 }
+      : opts.bareLimit
+        ? { filePath: path, limit: 20 }
+        : { filePath: path };
     await hooks["tool.execute.after"]({ tool: "read", sessionID: "s1", callID: "c1", args }, out);
     await tick();
     return {
@@ -88,7 +92,11 @@ const copilotHost: Host = {
       },
       ...(opts.pdfExtractor ? { pdfExtractor: opts.pdfExtractor } : {}),
     });
-    const toolArgs = opts.ranged ? { path, view_range: [1, 20] } : { path };
+    const toolArgs = opts.ranged
+      ? { path, view_range: [1, 20] }
+      : opts.bareLimit
+        ? { path, limit: 20 }
+        : { path };
     const result = await hooks.onPostToolUse(buildViewInput({ path, workingDirectory: tmp, text: NATIVE, toolArgs }));
     const text = result?.modifiedResult?.textResultForLlm;
     return { text: text ?? NATIVE, changed: text !== undefined, calls: runner.calls.length, logs };
@@ -170,6 +178,21 @@ describe("cross-host parity: documents and PDFs", () => {
       const rangedPdf = await host.read(pdf, { pdfExtractor: okPdf, ranged: true });
       strictEqual(rangedPdf.changed, false, host.name);
       strictEqual(rangedPdf.calls, 0, host.name);
+    }
+  });
+
+  it("(P5b) bare `limit` reads are condensed identically on both hosts", async () => {
+    // One eligibility rule across hosts: OpenCode `limit` and Copilot `limit` are both
+    // a request for the top of a file, not an exact-content range.
+    for (const path of [readme, notes]) {
+      const results = await Promise.all(hosts.map((h) => h.read(path, { bareLimit: true })));
+      results.forEach((r, index) => {
+        const host = hosts[index];
+        ok(r.changed, host.name);
+        strictEqual(r.calls, 1, host.name);
+        strictEqual(range(r.text), "10-12", `${host.name}: ${r.text}`);
+      });
+      strictEqual(range(results[0].text), range(results[1].text));
     }
   });
 });

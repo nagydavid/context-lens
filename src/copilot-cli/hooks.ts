@@ -52,8 +52,11 @@ const MAX_TRACKED_SESSIONS = 100;
 const MAX_TASK_CHARS = 2000;
 
 function hasRangeArgument(args: Record<string, unknown>): boolean {
+  // Offset reads are explicit requests for exact content; never condense them.
+  // A bare `limit` is how models ask for the top of a file, so it is still
+  // condensed. `view_range` / `start_line` / `end_line` are unambiguous ranges.
   return Object.keys(args).some((key) =>
-    /range/i.test(key) || ["start_line", "startLine", "end_line", "endLine", "offset", "limit"].includes(key),
+    /range/i.test(key) || ["start_line", "startLine", "end_line", "endLine"].includes(key),
   );
 }
 
@@ -130,6 +133,10 @@ export function createCopilotHooks(
 
     async onPostToolUse(input: PostToolUseHookInput) {
       try {
+        // Only ParaDoc's own child processes are skipped (PARADOC_CHILD=1). Subagents
+        // spawned by the host are NOT marked, so their views ARE intercepted on purpose:
+        // a host subagent reading a whole file is exactly the token waste ParaDoc exists
+        // to remove.
         if (env.PARADOC_CHILD === "1") return undefined;
         if (input.toolName !== "view") return undefined;
         if (!isRecord(input.toolArgs)) return undefined;

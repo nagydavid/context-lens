@@ -76,10 +76,27 @@ describe("createCopilotHooks", () => {
   });
 
   it("(c) passes through range arguments without running the subagent", async () => {
-    for (const toolArgs of [{ path: largePath, view_range: [1, 50] }, { path: largePath, range: [1, 50] }]) {
+    for (const toolArgs of [
+      { path: largePath, view_range: [1, 50] },
+      { path: largePath, range: [1, 50] },
+      { path: largePath, start_line: 1, end_line: 50 },
+      { path: largePath, startLine: 1, endLine: 50 },
+    ]) {
       const { hooks, runner } = setup();
       strictEqual(await hooks.onPostToolUse(view(largePath, { toolArgs })), undefined);
       strictEqual(runner.calls.length, 0);
+    }
+  });
+
+  it("(c2) condenses bare offset/limit args on both hosts' escape-hatch rule", async () => {
+    // A bare `limit` is how a model asks for the top of a file, and Copilot has no
+    // offset-based range read, so both must still be condensed.
+    for (const toolArgs of [{ path: largePath, limit: 50 }, { path: largePath, offset: 12 }]) {
+      const { hooks, runner } = setup();
+      const result = await hooks.onPostToolUse(view(largePath, { toolArgs }));
+      ok(result?.modifiedResult, `expected interception for ${JSON.stringify(toolArgs)}`);
+      ok(result.modifiedResult.textResultForLlm.includes("[paradoc]"));
+      strictEqual(runner.calls.length, 1);
     }
   });
 

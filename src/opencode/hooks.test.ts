@@ -127,13 +127,22 @@ describe("createParaDocHooks", () => {
       ok(runner.calls[0].prompt.includes("inline documentation file"));
     }
 
-    for (const args of [{ offset: 1 }, { limit: 20 }]) {
+    // Offset is the escape hatch; a bare `limit` is still condensed.
+    for (const args of [{ offset: 1 }, { offset: 0 }, { offset: 1, limit: 20 }]) {
       const { hooks, runner } = setup();
       const out = mkOutput(readmePath);
       const original = out.output;
       await hooks["tool.execute.after"](call("read", { filePath: readmePath, ...args }), out);
       strictEqual(out.output, original);
       strictEqual(runner.calls.length, 0);
+    }
+
+    for (const args of [{ limit: 20 }, { limit: 50 }]) {
+      const { hooks, runner } = setup();
+      const out = mkOutput(readmePath);
+      await hooks["tool.execute.after"](call("read", { filePath: readmePath, ...args }), out);
+      ok(out.output.includes("--- lines 10-12"), out.output);
+      strictEqual(runner.calls.length, 1);
     }
 
     const { hooks, runner } = setup();
@@ -153,14 +162,22 @@ describe("createParaDocHooks", () => {
     strictEqual(runner.calls.length, 0);
   });
 
-  it("(c) ranged reads pass through", async () => {
-    for (const args of [{ offset: 0 }, { limit: 50 }]) {
+  it("(c) offset reads pass through while bare-limit reads are condensed", async () => {
+    for (const args of [{ offset: 0 }, { offset: 50 }, { offset: 0, limit: 50 }]) {
       const { hooks, runner } = setup();
       const out = mkOutput(largePath);
       const snapshot = structuredClone(out);
       await hooks["tool.execute.after"](call("read", { filePath: largePath, ...args }), out);
       deepStrictEqual(out, snapshot);
       strictEqual(runner.calls.length, 0);
+    }
+
+    for (const args of [{ limit: 50 }, { limit: 1 }]) {
+      const { hooks, runner } = setup();
+      const out = mkOutput(largePath);
+      await hooks["tool.execute.after"](call("read", { filePath: largePath, ...args }), out);
+      ok(out.output.includes("--- lines 10-12"), out.output);
+      strictEqual(runner.calls.length, 1);
     }
   });
 
