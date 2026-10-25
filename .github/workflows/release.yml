@@ -67,16 +67,17 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         run: npm publish --dry-run --access public
 
-      # Trusted publishing (OIDC) needs a recent npm; `npm stage` exists in the npm 11 line.
+      # Trusted publishing (OIDC) needs npm >= 11.15.0; pinned for a deterministic toolchain.
       - name: Upgrade npm
         if: github.event_name == 'push' || !inputs.dry_run
-        run: npm install -g npm@11
+        run: npm install -g npm@11.21.1
 
-      # Direct publish is disabled on the trusted publisher, so this stages the version.
-      # It goes live only after approval: npm stage approve <stage-id> (or on npmjs.com).
-      - name: Stage release on npm
+      # Trusted publishing is configured on @davidnagy/paradoc (trust id f4406f3e-e683-4777-aaab-27be1eaa3144,
+      # permissions publish+stage publish) for this repo and workflow file, so the OIDC token from
+      # id-token: write publishes directly with provenance and no interactive 2FA.
+      - name: Publish to npm
         if: github.event_name == 'push' || !inputs.dry_run
-        run: npm stage publish --provenance --access public
+        run: npm publish --provenance --access public
 
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/')
