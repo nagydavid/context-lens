@@ -1,0 +1,156 @@
+{
+  "generatedAt": "2026-10-25T08:10:43.307Z",
+  "hosts": {
+    "opencode": "opencode v2.1.0",
+    "opencodePath": "opencode",
+    "copilot": "GitHub Copilot CLI 1.0.103.\nRun 'copilot update' to check for updates.",
+    "copilotPath": "copilot",
+    "node": "v24.21.0"
+  },
+  "package": {
+    "name": "@davidnagy/paradoc",
+    "checkout": "0.1.2",
+    "published": "0.2.2",
+    "tags": [
+      "v0.2.0",
+      "v0.2.1",
+      "v0.2.2"
+    ]
+  },
+  "branch": {
+    "headCommit": "5c34ae1c5778436d905af626cd9099fae1de819d",
+    "headBranch": "milestone/M008",
+    "checkoutVersion": "0.1.2",
+    "publishedVersion": "0.2.2",
+    "publishedTag": "v0.2.2",
+    "tags": [
+      "v0.2.0",
+      "v0.2.1",
+      "v0.2.2"
+    ],
+    "tagBranches": {
+      "v0.2.0": [
+        "milestone/M007",
+        "remotes/origin/master",
+        "remotes/origin/milestone/M007"
+      ],
+      "v0.2.1": [
+        "milestone/M007",
+        "remotes/origin/milestone/M007"
+      ],
+      "v0.2.2": [
+        "milestone/M007",
+        "remotes/origin/milestone/M007"
+      ]
+    },
+    "diffStatVsPublishedTag": {
+      "summary": "17 files changed, 260 insertions(+), 465 deletions(-)",
+      "files": [
+        ".github/workflows/ci.yml            |  45 ++++",
+        ".github/workflows/release.yml       |  83 ++++++++",
+        "README.md                           |   2 +-",
+        "package-lock.json                   |   4 -",
+        "package.json                        |   4 +-",
+        "scripts/repro-host-interception.mjs | 411 ------------------------------------",
+        "src/cli/controls-cli.ts             |   6 +",
+        "src/cli/install.ts                  |  14 +-",
+        "src/copilot-cli/extension-entry.ts  |   5 +",
+        "src/copilot-cli/mcp-server.ts       |   5 +",
+        "src/copilot-cli/subagent.test.ts    |   5 +",
+        "src/copilot-cli/subagent.ts         |  15 +-",
+        "src/core/controls.test.ts           |  35 ++-",
+        "src/core/controls.ts                |  31 ++-",
+        "src/core/e2e-scripts.test.ts        |  28 ---",
+        "src/core/index.ts                   |   1 +",
+        "src/core/interceptor.test.ts        |  31 +--"
+      ]
+    }
+  },
+  "priorEvidence": [
+    {
+      "path": "/tmp/oc-e2e3.log",
+      "note": "research-slice reference only; not this run's evidence"
+    },
+    {
+      "path": "/tmp/cp-e2e2.log",
+      "note": "research-slice reference only; not this run's evidence"
+    }
+  ],
+  "runs": [
+    {
+      "host": "opencode",
+      "scenario": "happy",
+      "model": "openai/gpt-5.6-terra",
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "wallMs": 26607,
+      "harness": "scripts/e2e-opencode.mjs",
+      "interception": {
+        "source": "opencode-harness-json",
+        "ok": true,
+        "excerptLines": 6,
+        "fileLines": 400,
+        "confidence": 5,
+        "elapsedMs": 3703,
+        "modelSource": "project",
+        "hostVersion": "opencode v2.1.0"
+      },
+      "logTail": "{\"hostVersion\":\"opencode v2.1.0\",\"agentModel\":\"openai/gpt-5.6-terra\",\"subagentModel\":\"openai/gpt-5.6-terra\",\"scenario\":\"happy\",\"ok\":true,\"elapsedMs\":3703,\"confidence\":5,\"linesReturned\":6,\"modelSource\":\"project\",\"totalLines\":400,\"attempts\":2}\n{\"ok\":true,\"hostVersion\":\"opencode v2.1.0\",\"elapsedMs\":3703,\"totalWallMs\":26519,\"confidence\":5,\"modelSource\":\"project\"}\nretrying happy after: interception exceeded 5000ms: 6293ms"
+    },
+    {
+      "host": "copilot",
+      "scenario": "happy",
+      "model": "github/claude-haiku-4.5",
+      "status": "PASS",
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "wallMs": 17031,
+      "harness": "scripts/e2e-copilot.mjs",
+      "interception": {
+        "source": "copilot-plugin-log",
+        "logPath": "/tmp/paradoc-copilot-e2e-wwMprQ/paradoc.jsonl",
+        "intercepted": true,
+        "message": "intercepted /tmp/paradoc-copilot-e2e-wwMprQ/big.ts (400 lines, confidence 5, 8293ms)",
+        "path": "/tmp/paradoc-copilot-e2e-wwMprQ/big.ts",
+        "fileLines": 400,
+        "confidence": 5,
+        "elapsedMs": 8292.816415000001,
+        "tokensSaved": 5599,
+        "modelSource": "env",
+        "excerptLines": 6
+      },
+      "logTail": "INFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nPASS happy\nproject=/tmp/paradoc-copilot-e2e-wwMprQ\nlog-dir=/tmp/paradoc-copilot-e2e-wwMprQ/logs\ntranscript=/tmp/paradoc-copilot-e2e-wwMprQ/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-wwMprQ/paradoc.jsonl\nlog-source=jsonl\nWARN expected copilot 1.0.98, got GitHub Copilot CLI 1.0.103.\nRun 'copilot update' to check for updates."
+    },
+    {
+      "host": "copilot",
+      "scenario": "default-model",
+      "model": "claude-code/claude-haiku-5-5",
+      "status": "FAIL",
+      "exitCode": 1,
+      "signal": null,
+      "timedOut": false,
+      "wallMs": 23300,
+      "harness": "scripts/e2e-copilot.mjs",
+      "interception": {
+        "source": "copilot-plugin-log",
+        "logPath": "/tmp/paradoc-copilot-e2e-ZRKCT2/paradoc.jsonl",
+        "intercepted": false,
+        "message": "fallback subagent-error for /tmp/paradoc-copilot-e2e-ZRKCT2/big.ts: copilot exited with code 1: Error: Model \"claude-haiku-5-5\" from --model flag is not available.\n",
+        "path": "/tmp/paradoc-copilot-e2e-ZRKCT2/big.ts",
+        "fileLines": 400,
+        "elapsedMs": 2732.957553,
+        "modelSource": "global",
+        "fallbackReason": "subagent-error",
+        "detail": "copilot exited with code 1: Error: Model \"claude-haiku-5-5\" from --model flag is not available.\n"
+      },
+      "reason": "copilot exited with code 1: Error: Model \"claude-haiku-5-5\" from --model flag is not available.",
+      "expectedFailure": true,
+      "expectedFailureSignature": "is not available",
+      "expectedFailureMatched": true,
+      "logTail": "INFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nINFO isolated COPILOT_HOME (user hooks, MCP servers, instructions excluded)\nWARN expected copilot 1.0.98, got GitHub Copilot CLI 1.0.103.\nRun 'copilot update' to check for updates.\nRETRY happy: condensed view result with Confidence missing, or fixtureValue400 leaked; see debug logs\nproject=/tmp/paradoc-copilot-e2e-Qw8m0z\nlog-dir=/tmp/paradoc-copilot-e2e-Qw8m0z/logs\ntranscript=/tmp/paradoc-copilot-e2e-Qw8m0z/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-Qw8m0z/paradoc.jsonl\nFAIL happy: condensed view result with Confidence missing, or fixtureValue400 leaked; see debug logs\nproject=/tmp/paradoc-copilot-e2e-ZRKCT2\nlog-dir=/tmp/paradoc-copilot-e2e-ZRKCT2/logs\ntranscript=/tmp/paradoc-copilot-e2e-ZRKCT2/copilot-transcript.txt\nparadoc-log=/tmp/paradoc-copilot-e2e-ZRKCT2/paradoc.jsonl"
+    }
+  ]
+}
