@@ -4,15 +4,20 @@
 // docs/m008-repro-evidence.json). The PARADOC_E2E gate runs before argument validation and
 // before any host is touched, so `npm test` never depends on a host, a model, or the network.
 //
-// Runs (sequential on purpose: both hosts spawn model children and share free-model quota):
+// Runs (sequential on purpose: both hosts spawn model children and share free-model quota).
+// Each definition names the harness scenario it runs (`--scenario <definition.scenario>`):
 //   opencode  happy          scripts/e2e-opencode.mjs --scenario happy,
 //                            E2E_AGENT_MODEL/E2E_SUBAGENT_MODEL default openai/gpt-5.6-terra
+//   opencode  large          --scenario large: 3000-line fixture with chunk fan-out
 //   copilot   happy          scripts/e2e-copilot.mjs --scenario happy,
 //                            PARADOC_MODEL default github/claude-haiku-4.5
+//   copilot   pass-through   --scenario pass-through: a small full view plus a `view_range`
+//                            view must produce ZERO intercepted records (offset-only rule)
 //   copilot   default-model  same harness WITHOUT the PARADOC_MODEL override, so the global
-//                            default model (claude-haiku-5-5) is rejected by the host. That
-//                            run is recorded as a labelled known-failure (expectedFailure)
-//                            and never makes this script exit non-zero.
+//                            default model (claude-haiku-5-5) is aliased to claude-haiku-4.5
+//                            by COPILOT_MODEL_ALIASES and the read is condensed. This used to
+//                            be a labelled known failure (expectedFailure); the v0.2.2 alias
+//                            map merged into milestone/M008 makes it an ordinary PASS run.
 //
 // Usage: PARADOC_E2E=1 node scripts/repro-host-interception.mjs [--out <path>]
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
@@ -126,7 +131,7 @@ function parseHarnessJson(text) {
   const merged = {};
   for (const record of jsonRecords(text)) {
     if (!record || typeof record !== "object") continue;
-    for (const key of ["ok", "linesReturned", "totalLines", "confidence", "elapsedMs", "modelSource", "hostVersion", "fallbackReason"]) {
+    for (const key of ["ok", "linesReturned", "totalLines", "confidence", "elapsedMs", "modelSource", "hostVersion", "fallbackReason", "chunks", "concurrencyPinned", "childModelCall"]) {
       if (merged[key] === undefined && record[key] !== undefined) merged[key] = record[key];
     }
   }
@@ -141,7 +146,27 @@ function parseHarnessJson(text) {
     modelSource: merged.modelSource,
     hostVersion: merged.hostVersion,
     fallbackReason: merged.fallbackReason,
+    chunks: merged.chunks,
+    concurrencyPinned: merged.concurrencyPinned,
+    childModelCall: merged.childModelCall,
   };
+}
+
+/**
+ * OpenCode metrics come from two sources: the plugin's own `[paradoc] info: intercepted …`
+ * stderr line (elapsed ms, confidence, file line count) and the harness's JSON lines (chunk
+ * fan-out, modelSource, host version). Merge them so one record carries everything.
+ */
+function mergeOpenCodeEvidence(fromLog, fromHarness) {
+  if (!fromLog && !fromHarness) return undefined;
+  if (!fromLog) return fromHarness;
+  if (!fromHarness) return fromLog;
+  const merged = { ...fromHarness, ...fromLog };
+  // Keep harness-only fields the plugin line never reports.
+  for (const key of ["chunks", "concurrencyPinned", "modelSource", "hostVersion", "ok"]) {
+    if (merged[key] === undefined && fromHarness[key] !== undefined) merged[key] = fromHarness[key];
+  }
+  return merged;
 }
 
 /** Host debug logs carry the condensed result the model actually saw: `showing N of M lines`. */
@@ -176,6 +201,11 @@ async function collectCopilotEvidence(output) {
       const records = jsonRecords(await readFile(logPath, "utf8"));
       const intercepted = records.filter((r) => typeof r?.message === "string" && r.message.startsWith("intercepted"));
       const fallbacks = records.filter((r) => typeof r?.fallbackReason === "string");
+      // Counts are recorded even when there is no interception at all: a pass-through scenario
+      // proves the offset-only rule by asserting interceptedCount === 0.
+      evidence.recordCount = records.length;
+      evidence.interceptedCount = intercepted.length;
+      evidence.fallbackCount = fallbacks.length;
       const record = intercepted.at(-1) ?? fallbacks.at(-1);
       if (record) {
         evidence.intercepted = intercepted.length > 0;
@@ -271,7 +301,7 @@ async function executeRun(definition) {
   const env = { ...process.env, ...definition.env };
   for (const key of definition.deleteEnv ?? []) delete env[key];
   const started = Date.now();
-  const result = await run(process.execPath, [join(root, definition.script), "--scenario", "happy"], {
+  const result = await run(process.execPath, [join(root, definition.script), "--scenario", definition.harnessScenario ?? definition.scenario], {
     cwd: root, env,
   }, RUN_TIMEOUT);
   const combined = `${result.stdout}${result.stderr}`;
@@ -280,7 +310,7 @@ async function executeRun(definition) {
   // collected on FAIL too — that is where a classified fallback and its reason are visible.
   const interception = definition.host === "copilot"
     ? await collectCopilotEvidence(combined)
-    : (parseInterceptedLine(combined) ?? parseHarnessJson(combined));
+    : mergeOpenCodeEvidence(parseInterceptedLine(combined), parseHarnessJson(combined));
   const entry = {
     host: definition.host,
     scenario: definition.scenario,
@@ -319,6 +349,9 @@ function summarize(entry) {
   if (interception?.confidence !== undefined) bits.push(`confidence=${interception.confidence}`);
   if (interception?.elapsedMs !== undefined) bits.push(`${Math.round(interception.elapsedMs)}ms`);
   if (interception?.fallbackReason) bits.push(`fallback=${interception.fallbackReason}`);
+  if (interception?.interceptedCount !== undefined) bits.push(`interceptedCount=${interception.interceptedCount}`);
+  if (interception?.chunks !== undefined) bits.push(`chunks=${interception.chunks}`);
+  if (interception?.modelSource) bits.push(`modelSource=${interception.modelSource}`);
   if (entry.expectedFailure) bits.push(`known-failure${entry.expectedFailureMatched ? " (matched)" : " (signature NOT matched)"}`);
   bits.push(`wall=${entry.wallMs}ms`);
   if (entry.timedOut) bits.push("TIMED-OUT");
@@ -350,15 +383,24 @@ async function main() {
       env: { E2E_AGENT_MODEL: OPENCODE_MODEL, E2E_SUBAGENT_MODEL: OPENCODE_SUBAGENT_MODEL },
     },
     {
+      host: "opencode", scenario: "large", script: "scripts/e2e-opencode.mjs", model: OPENCODE_MODEL,
+      env: { E2E_AGENT_MODEL: OPENCODE_MODEL, E2E_SUBAGENT_MODEL: OPENCODE_SUBAGENT_MODEL },
+    },
+    {
       host: "copilot", scenario: "happy", script: "scripts/e2e-copilot.mjs", model: COPILOT_MODEL,
       env: { PARADOC_MODEL: COPILOT_MODEL },
     },
     {
-      host: "copilot", scenario: "default-model", script: "scripts/e2e-copilot.mjs",
+      host: "copilot", scenario: "pass-through", script: "scripts/e2e-copilot.mjs", model: COPILOT_MODEL,
+      env: { PARADOC_MODEL: COPILOT_MODEL },
+    },
+    {
+      // No PARADOC_MODEL override: the global default model must be aliased by
+      // COPILOT_MODEL_ALIASES (v0.2.2, merged from milestone/M007) and intercepted.
+      // The harness scenario is the ordinary happy read; only the model override differs.
+      host: "copilot", scenario: "default-model", harnessScenario: "happy", script: "scripts/e2e-copilot.mjs",
       model: globalCopilotModel ?? "global default",
       env: {}, deleteEnv: ["PARADOC_MODEL"],
-      expectedFailure: true,
-      expectedFailureSignature: "is not available",
     },
   ];
 

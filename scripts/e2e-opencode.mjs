@@ -232,7 +232,13 @@ function checkCondensed(r, totalLines = E2E_FIXTURE_LINES, maxElapsedMs = 5000) 
   const elapsedMs = Number(log.message.match(/(\d+)ms\)$/)?.[1]);
   assertion(Number.isFinite(elapsedMs), "interception log did not end with elapsed milliseconds");
   assertion(elapsedMs < maxElapsedMs, `interception exceeded ${maxElapsedMs}ms: ${elapsedMs}ms`);
-  return { elapsedMs, confidence: Number(confidence[1]), linesReturned, modelSource: log.extra?.modelSource };
+  // The plugin names the child-model seam it selected at setup, so the evidence records whether
+  // the live child call went through `ctx.generate.text` or the child-session fallback.
+  const seam = r.logs.find((l) => /^child model call: /.test(l.message));
+  return {
+    elapsedMs, confidence: Number(confidence[1]), linesReturned,
+    modelSource: log.extra?.modelSource, childModelCall: seam?.extra?.childModelCall,
+  };
 }
 
 async function scenarioHappy(ctx, temp, configHome) {

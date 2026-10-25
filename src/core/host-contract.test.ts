@@ -15,7 +15,15 @@ interface EvidenceRun {
   host: string;
   scenario: string;
   status: string;
+  model?: string | null;
   expectedFailure?: boolean;
+  interception?: {
+    interceptedCount?: number;
+    excerptLines?: number;
+    fileLines?: number;
+    confidence?: number;
+    elapsedMs?: number;
+  };
 }
 interface Evidence {
   package: { checkout: string; published: string };
@@ -101,15 +109,31 @@ describe("M008 reproduction evidence JSON", () => {
     }
   });
 
-  it("records the opencode and copilot happy runs plus the labelled default-model failure", () => {
+  it("records the live PASS runs on both hosts including the aliased default-model run", () => {
     const byKey = new Map<string, EvidenceRun>(
       evidence.runs.map((r) => [`${r.host}-${r.scenario}`, r])
     );
-    strictEqual(byKey.get("opencode-happy")?.status, "PASS");
-    strictEqual(byKey.get("copilot-happy")?.status, "PASS");
-    const known = byKey.get("copilot-default-model");
-    ok(known, "copilot-default-model run missing");
-    strictEqual(known.expectedFailure, true, "default-model run is not labelled expectedFailure");
+    // Every scenario the slice demo depends on: a normal read condensed on each host, the
+    // large fan-out run, the offset/range pass-through run, and the run that relies on
+    // COPILOT_MODEL_ALIASES for the global default model (no longer a labelled failure).
+    const expectedPass = ["opencode-happy", "opencode-large", "copilot-happy", "copilot-pass-through", "copilot-default-model"];
+    for (const key of expectedPass) {
+      const run = byKey.get(key);
+      ok(run, `${key} run missing from evidence`);
+      strictEqual(run.status, "PASS", `${key} did not PASS`);
+      strictEqual(run.expectedFailure, undefined, `${key} must not be labelled expectedFailure`);
+    }
+    const aliased = byKey.get("copilot-default-model")!;
+    ok(
+      typeof aliased.model === "string" && aliased.model.includes("claude-haiku-5-5"),
+      `copilot-default-model must run the unaliased global default model, got ${aliased.model}`
+    );
+    const passThrough = byKey.get("copilot-pass-through")!;
+    strictEqual(
+      passThrough.interception?.interceptedCount,
+      0,
+      "pass-through run must record zero interceptions (offset-only eligibility rule)"
+    );
   });
 
   it("contract doc quotes the same happy-run statuses as the evidence", () => {

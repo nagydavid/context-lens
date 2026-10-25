@@ -204,10 +204,24 @@ export const ParaDocV2Plugin = {
     const directory = directoryOf(ctx);
     const generateText = asRecord(ctx.generate)?.text;
     const hasGenerateText = typeof generateText === "function";
+    const client = createV2Client(ctx);
+
+    // Observability: name the child-model seam the host exposed, once per plugin setup. A live
+    // run can then be attributed to `ctx.generate.text` or the child-session fallback without
+    // reading the source — the live harness reports it and `scripts/repro-host-interception.mjs`
+    // records it in the evidence as `interception.childModelCall`.
+    void client.app?.log({
+      body: {
+        service: "paradoc",
+        level: "debug",
+        message: `child model call: ${hasGenerateText ? "ctx.generate.text" : "ctx.session.generate"}`,
+        extra: { childModelCall: hasGenerateText ? "generate.text" : "session.generate" },
+      },
+    });
 
     // Tuning (env, project/global config) is resolved inside createParaDocHooks.
     const hooks = createParaDocHooks({
-      client: createV2Client(ctx),
+      client,
       directory,
       // Prefer the stateless seam. When it is absent no runner is passed at all, so
       // createParaDocHooks builds the child-session runner — the one that registers child IDs

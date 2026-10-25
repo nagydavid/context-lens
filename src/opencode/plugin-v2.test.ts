@@ -689,6 +689,40 @@ describe("ParaDocV2Plugin child model call (ctx.generate.text)", () => {
     }
   });
 
+  it("logs which child-model seam the host exposed, so a live run is attributable", () => {
+    // The seam is reported once at setup, before any read happens: the live harness reads this
+    // line back out of the host transcript and the repro records it as `childModelCall`.
+    const withSeam = captureStderr();
+    try {
+      makeHarness({}, async () => ({ text: ANSWER }));
+    } finally {
+      withSeam.restore();
+    }
+    ok(
+      withSeam.lines.some(
+        (line) =>
+          line.includes("child model call: ctx.generate.text") &&
+          line.includes('"childModelCall":"generate.text"'),
+      ),
+      `expected the generate.text seam log, got: ${withSeam.lines.join("")}`,
+    );
+
+    const withoutSeam = captureStderr();
+    try {
+      makeHarness();
+    } finally {
+      withoutSeam.restore();
+    }
+    ok(
+      withoutSeam.lines.some(
+        (line) =>
+          line.includes("child model call: ctx.session.generate") &&
+          line.includes('"childModelCall":"session.generate"'),
+      ),
+      `expected the child-session seam log, got: ${withoutSeam.lines.join("")}`,
+    );
+  });
+
   it("falls back to the child-session runner when ctx.generate.text is absent", async () => {
     const { dir, file, content } = makeProject("paradoc-v2-session-");
     const saved = { ...process.env };
