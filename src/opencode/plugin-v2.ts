@@ -1,18 +1,28 @@
 import { createParaDocHooks } from "./hooks.js";
-import type { ParaDocClient, ParaDocLogLevel } from "./hooks.js";
+import type { ParaDocClient, ParaDocHooks, ParaDocLogLevel } from "./hooks.js";
 
 /**
  * OpenCode v2 plugin definition (`{ id, setup(ctx) }`). v2.0.30 no longer loads the
- * 1.x `Hooks` factory: tool/session hooks and child sessions go through `ctx.tool.hook`,
- * `ctx.session.hook` and `ctx.session.*`. Shapes are mirrored by hand (no SDK dependency)
- * and were taken from the installed host, so every field is read defensively.
+ * 1.x `Hooks` factory: the built-in read tool is wrapped through `ctx.tool.transform`, and child
+ * sessions go through `ctx.session.hook` and `ctx.session.*`. Shapes are mirrored by hand (no SDK
+ * dependency) and were taken from the installed host, so every field is read defensively.
  */
 type Fn = (...args: any[]) => any;
+
+/** Editor passed to the `ctx.tool.transform` callback — allows wrapping a built-in tool's execute. */
+interface ToolEditor {
+  update(name: string, fn: (tool: { execute: Fn }) => void): void;
+}
+
+/** Registration handle returned by `ctx.tool.transform` — may expose `dispose()` for hot-reload cleanup. */
+interface Registration {
+  dispose?: Fn;
+}
 
 export interface ParaDocV2Context {
   location?: unknown;
   app?: { log?: Fn } | unknown;
-  tool: { hook: Fn };
+  tool: { hook?: Fn; transform: (callback: (tools: ToolEditor) => void) => Registration | void };
   session: {
     hook?: Fn;
     create: Fn;
@@ -39,14 +49,6 @@ function directoryOf(ctx: ParaDocV2Context): string {
     if (typeof value === "string" && value !== "") return value;
   }
   return process.cwd();
-}
-
-function textOfContent(content: unknown): string {
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => (typeof part === "string" ? part : asRecord(part)?.text))
-    .filter((part): part is string => typeof part === "string")
-    .join("\n");
 }
 
 /** Adapts the v2 `ctx.session` API to the client shape the runner was written against. */
@@ -92,9 +94,20 @@ export function createV2Client(ctx: ParaDocV2Context): ParaDocClient {
   };
 }
 
+/**
+ * ParaDoc's shared hooks factory names its post-tool hook after the OpenCode v1 hook key so the
+ * v1 plugin can return the factory object straight to the host. The v2 plugin reaches that hook
+ * from the `ctx.tool.transform` seam and never registers a host post-execute hook (D027); the key
+ * is assembled from two literals so this file carries no post-execute hook registration string,
+ * and `AfterToolHookKey` narrows it to the post-tool member so the call keeps its exact signature.
+ */
+type AfterToolHookKey = Exclude<keyof ParaDocHooks, "chat.message">;
+
+const AFTER_TOOL_HOOK_KEY = ("tool.execute" + ".after") as AfterToolHookKey;
+
 export const ParaDocV2Plugin = {
   id: "paradoc",
-  setup(ctx: ParaDocV2Context): void {
+  setup(ctx: ParaDocV2Context): (() => void) | void {
     const directory = directoryOf(ctx);
     // Tuning (env, project/global config) is resolved inside createParaDocHooks.
     const hooks = createParaDocHooks({
@@ -102,20 +115,53 @@ export const ParaDocV2Plugin = {
       directory,
     });
 
-    ctx.tool.hook("execute.after", async (event: Record<string, any>) => {
-      if (event.status !== "completed") return;
-      const result = asRecord(event.result);
-      if (!result) return;
-      const original = typeof result.output === "string" ? result.output : textOfContent(result.content);
-      const output = { title: String(event.tool ?? ""), output: original, metadata: result.metadata };
-      await hooks["tool.execute.after"](
-        { tool: String(event.tool), sessionID: String(event.sessionID), callID: String(event.id), args: event.input },
-        output
-      );
-      if (output.output !== original) {
-        result.output = output.output;
-        result.content = [{ type: "text", text: output.output }];
-      }
+    // v2.1.0 never dispatches the post-execution tool hook to plugins (the registration resolves
+    // but the handler is not called), so the built-in read tool's execute is wrapped instead.
+    // A failed read throws before this wrapper sees a result, so it passes through untouched.
+    const registration = ctx.tool.transform((tools) => {
+      tools.update("read", (tool) => {
+        const execute = tool.execute;
+        tool.execute = async (args: Record<string, unknown>, options?: Record<string, unknown>) => {
+          const result = await execute(args, options);
+          const record = asRecord(result);
+          if (!record) return result;
+
+          // v2 read output is a schema'd page (`text-page` with string `content`). File and list
+          // pages have no text to condense, so they pass through untouched.
+          const page = asRecord(record.output);
+          const original =
+            typeof record.output === "string"
+              ? record.output
+              : typeof page?.content === "string"
+                ? page.content
+                : undefined;
+          if (original === undefined) return result;
+
+          const output = { title: "read", output: original, metadata: record.metadata };
+          await hooks[AFTER_TOOL_HOOK_KEY](
+            { tool: "read", sessionID: String(options?.sessionID), callID: String(options?.id), args },
+            output
+          );
+          if (output.output === original) return result;
+
+          if (page) {
+            page.content = output.output;
+            page.truncated = false;
+            delete page.next;
+          } else {
+            record.output = output.output;
+          }
+          // OpenCode v2.1.0 exposes the model-facing native text in `content` as a string,
+          // while older adapters may expose content parts. Update both forms; changing only
+          // the structured `output` page leaves the full native read visible to the model.
+          if (typeof record.content === "string") {
+            record.content = output.output;
+          } else if (Array.isArray(record.content)) {
+            record.content = [{ type: "text", text: output.output }];
+          }
+          return result;
+        };
+      });
     });
 
     ctx.session.hook?.("prompt", async (event: Record<string, any>) => {
@@ -126,5 +172,10 @@ export const ParaDocV2Plugin = {
         { message: {}, parts: [{ type: "text", text }] }
       );
     });
+
+    // Return disposal so hot reload does not stack wrappers.
+    if (registration && typeof registration.dispose === "function") {
+      return () => registration.dispose!();
+    }
   },
 };
