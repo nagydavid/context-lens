@@ -5,6 +5,19 @@ import type { SubagentRequest, SubagentResult, SubagentRunner } from "../core/su
 
 export const NO_TOOLS_ARGS = ["--available-tools="] as const;
 
+/**
+ * The shared model config stores OpenCode IDs (e.g. claude-code/claude-haiku-5-5). Copilot
+ * rejects those with "not available", so each alias maps to the closest model Copilot
+ * accepts. Unmapped IDs pass through unchanged.
+ */
+export const COPILOT_MODEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  "claude-haiku-5-5": "claude-haiku-4.5",
+});
+
+export function copilotModelId(modelID: string): string {
+  return COPILOT_MODEL_ALIASES[modelID] ?? modelID;
+}
+
 export interface ReadableLike {
   on(event: "data", listener: (chunk: Buffer | string) => void): unknown;
 }
@@ -43,7 +56,7 @@ export function buildCopilotChildArgs(
     "--disable-builtin-mcps",
     "--no-ask-user",
     ...NO_TOOLS_ARGS,
-    ...(request.model ? ["--model", request.model.modelID] : []),
+    ...(request.model ? ["--model", copilotModelId(request.model.modelID)] : []),
     ...extraArgs,
   ];
 }

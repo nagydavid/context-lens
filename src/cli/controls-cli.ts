@@ -2,6 +2,7 @@ import { loadModelConfig } from "../core/config.js";
 import type { ConfigOptions } from "../core/config.js";
 import {
   CONTROL_USAGE,
+  applyModel,
   applyReset,
   applySet,
   parseControlArgs,
@@ -106,6 +107,11 @@ export function runControlCommand(argv: readonly string[], options: ControlCliOp
     case "set": {
       const warnings: string[] = [];
       const result = applySet({ [action.key]: action.value }, action.scope, optionsFor(options, warnings));
+      return change("set", result, warnings);
+    }
+    case "set-model": {
+      const warnings: string[] = [];
+      const result = applyModel(action.choice, action.scope, optionsFor(options, warnings));
       return change("set", result, warnings);
     }
     case "reset": {

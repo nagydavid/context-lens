@@ -1,4 +1,10 @@
-import type { ConfigOptions, ConfigScope } from "./config.js";
+import {
+  parseModelSpec,
+  saveModelConfig,
+  type ConfigOptions,
+  type ConfigScope,
+  type ModelChoice,
+} from "./config.js";
 import type { JudgeMode } from "./judge.js";
 import type { ParadocStatus } from "./status.js";
 import { clearTuning, saveTuning } from "./tuning-write.js";
@@ -23,8 +29,9 @@ import {
 /** One line of usage text shared by every host's error output. */
 export const CONTROL_USAGE = [
   "usage: paradoc status | paradoc set <key> <value> [--global|--project] | paradoc reset [key] [--global|--project]",
-  `keys: ${TUNING_KEYS.join(", ")}`,
+  `keys: ${[...TUNING_KEYS, "model"].join(", ")}`,
   "example: paradoc set thresholdLines 500",
+  "example: paradoc set model provider/model --global",
 ].join("\n");
 
 /** Hint printed after a successful write: config is read at host startup. */
@@ -37,6 +44,7 @@ export const SOURCE_PRECEDENCE = "explicit > env > project > global > default";
 export type ControlAction =
   | { action: "status" }
   | { action: "set"; key: TuningKey; value: number | JudgeMode; scope: ConfigScope }
+  | { action: "set-model"; choice: ModelChoice; scope: ConfigScope }
   | { action: "reset"; key?: TuningKey; scope: ConfigScope }
   | { action: "error"; message: string };
 
@@ -115,6 +123,12 @@ function parseSet(tokens: readonly string[]): ControlAction {
   if (positionals.length > 2) return controlError(`unexpected extra argument "${positionals[2]}"`);
 
   const [rawKey, rawValue] = positionals;
+  if (rawKey === "model") {
+    // Same spec format as PARADOC_MODEL: provider/model, split on the first slash.
+    const choice = parseModelSpec(rawValue);
+    if (!choice) return controlError(`invalid value "${rawValue}" for model: expected provider/model`);
+    return { action: "set-model", choice, scope };
+  }
   if (!isTuningKey(rawKey)) return controlError(`unknown key "${rawKey}"`);
   const coerced = coerceValue(rawKey, rawValue);
   if (!coerced.ok) return controlError(`invalid value "${rawValue}" for ${rawKey}: ${coerced.reason}`);
@@ -160,6 +174,19 @@ export function applySet(
 ): ChangeResult {
   try {
     return { ok: true, path: saveTuning(partial, scope, options) };
+  } catch (error: unknown) {
+    return { ok: false, message: messageOf(error) };
+  }
+}
+
+/** Thin wrapper over saveModelConfig: never throws, returns the written path or a message. */
+export function applyModel(
+  choice: ModelChoice,
+  scope: ConfigScope,
+  options: ConfigOptions = {},
+): ChangeResult {
+  try {
+    return { ok: true, path: saveModelConfig(choice, scope, options) };
   } catch (error: unknown) {
     return { ok: false, message: messageOf(error) };
   }

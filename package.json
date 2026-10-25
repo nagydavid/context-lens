@@ -1,6 +1,6 @@
 {
   "name": "@davidnagy/paradoc",
-  "version": "0.1.2",
+  "version": "0.2.2",
   "description": "Cheap-model read interceptor for coding agents (Spotify Portal pattern)",
   "type": "module",
   "main": "dist/index.js",
@@ -137,7 +137,7 @@
   "scripts": {
     "build": "tsc",
     "prepare": "tsc",
-    "test": "node --test dist/**/*.test.js",
+    "test": "node --test dist/**/*.test.js dist/*.test.js",
     "type-check": "tsc --noEmit",
     "dev": "tsc --watch",
     "bench": "node scripts/bench.mjs",

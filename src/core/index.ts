@@ -114,6 +114,7 @@ export {
 export type { TuningCheck, TuningKey, TuningOptions, TuningSettings, TuningSource } from "./tuning.js";
 export { clearTuning, saveTuning } from "./tuning-write.js";
 export {
+  applyModel,
   applyReset,
   applySet,
   CONTROL_USAGE,

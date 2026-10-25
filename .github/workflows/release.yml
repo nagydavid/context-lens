@@ -1,0 +1,83 @@
+name: Release
+
+# Publish flow: bump "version" in package.json, merge to master, then push a tag "v<version>".
+# The tag must match package.json exactly; the job refuses to publish otherwise.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run build, tests and npm publish --dry-run only (no publish, no GitHub release)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release
+      id-token: write # npm provenance attestation
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          pkg_version=$(node -p "require('./package.json').version")
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg_version}"
+            exit 1
+          fi
+          echo "Releasing ${pkg_version}"
+
+      - name: Install poppler-utils (pdftotext)
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Check package contents
+        run: npm pack --dry-run
+
+      - name: Publish to npm (dry run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        run: npm publish --dry-run --access public
+
+      # Trusted publishing (OIDC) needs a recent npm; `npm stage` exists in the npm 11 line.
+      - name: Upgrade npm
+        if: github.event_name == 'push' || !inputs.dry_run
+        run: npm install -g npm@11
+
+      # Direct publish is disabled on the trusted publisher, so this stages the version.
+      # It goes live only after approval: npm stage approve <stage-id> (or on npmjs.com).
+      - name: Stage release on npm
+        if: github.event_name == 'push' || !inputs.dry_run
+        run: npm stage publish --provenance --access public
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

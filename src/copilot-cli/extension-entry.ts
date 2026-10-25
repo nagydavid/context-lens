@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  applyModel,
   applyReset,
   applySet,
   parseControlArgs,
@@ -41,6 +42,10 @@ export async function registerParaDoc(
         text = renderStatus(await hooks.getStatus(projectRoot));
       } else if (action.action === "set") {
         const result = applySet({ [action.key]: action.value }, action.scope, configOptionsFor(projectRoot));
+        if (!result.ok) throw new Error(result.message);
+        text = renderChange("set", result);
+      } else if (action.action === "set-model") {
+        const result = applyModel(action.choice, action.scope, configOptionsFor(projectRoot));
         if (!result.ok) throw new Error(result.message);
         text = renderChange("set", result);
       } else {
